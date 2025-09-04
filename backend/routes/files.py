@@ -301,13 +301,29 @@ async def confirm_mapping(
         if failed > 0:
             summary += f". Ошибок при обработке: {failed}"
         
-        await db.commit()
-        return ConfirmResponse(
+        print(f"DEBUG: Committing transaction and preparing response")
+        print(f"DEBUG: About to commit database transaction")
+        
+        try:
+            await db.commit()
+            print(f"DEBUG: Database transaction committed successfully")
+        except Exception as commit_error:
+            print(f"ERROR: Failed to commit transaction: {commit_error}")
+            await db.rollback()
+            raise HTTPException(status_code=500, detail=f"Ошибка при сохранении данных: {commit_error}")
+        
+        response_data = ConfirmResponse(
             inserted=inserted, 
             updated=updated, 
             errors=errors[:10] if errors else [],
             summary=summary
         )
+        
+        print(f"DEBUG: Response prepared: inserted={inserted}, updated={updated}, summary='{summary}'")
+        print(f"DEBUG: Response object: {response_data}")
+        print(f"DEBUG: Returning response to client")
+        
+        return response_data
 
     except Exception as e:
         await db.rollback()

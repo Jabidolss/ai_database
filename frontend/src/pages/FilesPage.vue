@@ -42,6 +42,7 @@
           :sample-data="excelData.sample_data"
           :structure-info="excelData.structure_info"
           :extracted-images="excelData.extracted_images"
+          :is-loading="isConfirming"
           @mapping-changed="onMappingChanged"
           @apply-mappings="onApplyMappings"
         />
@@ -115,11 +116,14 @@
         </template>
       </Dialog>
     </div>
+    <!-- Toast для уведомлений -->
+    <Toast />
   </div>
 </template>
 
 <script>
-import { ref, reactive } from 'vue'
+import { ref, reactive, nextTick } from 'vue'
+import { useToast } from 'primevue/usetoast'
 import Card from 'primevue/card'
 import FileUpload from 'primevue/fileupload'
 import DataTable from 'primevue/datatable'
@@ -128,6 +132,7 @@ import Button from 'primevue/button'
 import Dropdown from 'primevue/dropdown'
 import Message from 'primevue/message'
 import Dialog from 'primevue/dialog'
+import Toast from 'primevue/toast'
 import apiService from '../services/apiService'
 import ColumnMapper from '../components/ColumnMapper.vue'
 
@@ -142,9 +147,11 @@ export default {
     Dropdown,
     Message,
     Dialog,
+    Toast,
     ColumnMapper
   },
   setup() {
+    const toast = useToast()
     const excelUpload = ref()
     const excelData = reactive({ 
       columns: null, 
@@ -196,6 +203,12 @@ export default {
         excelData.extracted_images = response.data.extracted_images
       } catch (error) {
         console.error('Ошибка загрузки Excel:', error)
+        toast.add({
+          severity: 'error',
+          summary: 'Ошибка загрузки',
+          detail: 'Не удалось загрузить Excel файл: ' + (error.response?.data?.detail || error.message),
+          life: 5000
+        })
       } finally {
         isUploadingExcel.value = false
       }
@@ -272,23 +285,66 @@ export default {
     }
 
     const onApplyMappings = async (finalMapping) => {
-      if (!selectedExcelFile.value) return
+      if (!selectedExcelFile.value) {
+        console.error('Файл не выбран')
+        return
+      }
 
+      console.log('Начинаем применение маппинга...', finalMapping)
       isConfirming.value = true
+      
       try {
         const response = await apiService.confirmMapping(selectedExcelFile.value, finalMapping)
-        confirmationResults.value = response.data
+        console.log('Получен ответ от сервера:', response)
+        
+        // Проверяем что ответ корректный
+        if (response && response.data) {
+          confirmationResults.value = response.data
+          console.log('Результаты сохранены:', confirmationResults.value)
 
-        // Показываем модальное окно с результатами
-        showResultsModal.value = true
+          // Показываем toast с успехом
+          toast.add({
+            severity: 'success',
+            summary: 'Импорт завершен',
+            detail: response.data.summary || 'Данные успешно импортированы',
+            life: 5000
+          })
 
-        // Очищаем форму маппинга
-        excelData.columns = null
-        excelData.mapping = {}
-        sampleData.value = []
-        selectedExcelFile.value = null
+          // Принудительное обновление Vue
+          await nextTick()
+          
+          // Показываем модальное окно с результатами
+          showResultsModal.value = true
+          console.log('Модальное окно показано:', showResultsModal.value)
+
+          // Очищаем форму маппинга только после показа результатов
+          excelData.columns = null
+          excelData.mapping = {}
+          sampleData.value = []
+          selectedExcelFile.value = null
+        } else {
+          console.error('Некорректный ответ сервера:', response)
+          throw new Error('Сервер вернул некорректный ответ')
+        }
       } catch (error) {
         console.error('Ошибка подтверждения маппинга:', error)
+        
+        // Показываем toast с ошибкой
+        let errorMessage = 'Неизвестная ошибка'
+        if (error.code === 'ECONNABORTED') {
+          errorMessage = 'Запрос занимает слишком много времени. Проверьте логи сервера - данные могут быть обработаны.'
+        } else if (error.response?.data?.detail) {
+          errorMessage = error.response.data.detail
+        } else if (error.message) {
+          errorMessage = error.message
+        }
+        
+        toast.add({
+          severity: 'error',
+          summary: 'Ошибка импорта',
+          detail: errorMessage,
+          life: 10000
+        })
       } finally {
         isConfirming.value = false
       }

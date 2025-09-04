@@ -266,7 +266,8 @@
                 label="Применить"
                 icon="pi pi-check"
                 class="p-button-success"
-                :disabled="!hasValidMappings"
+                :disabled="!hasValidMappings || isLoading"
+                :loading="isLoading"
                 @click="applyMappings"
               />
             </div>
@@ -361,6 +362,10 @@ export default {
     extractedImages: {
       type: Object,
       default: () => ({})
+    },
+    isLoading: {
+      type: Boolean,
+      default: false
     }
   },
   emits: ['mapping-changed', 'apply-mappings'],
