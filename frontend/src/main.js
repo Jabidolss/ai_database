@@ -4,6 +4,7 @@ import router from './router'
 import PrimeVue from 'primevue/config'
 import Aura from '@primevue/themes/aura'
 import ToastService from 'primevue/toastservice'
+import Tooltip from 'primevue/tooltip'
 import 'primeicons/primeicons.css'
 import 'primeflex/primeflex.css'
 import './styles/global.css'
@@ -93,5 +94,6 @@ app.use(PrimeVue, {
 })
 
 app.use(ToastService)
+app.directive('tooltip', Tooltip)
 app.use(router)
 app.mount('#app')

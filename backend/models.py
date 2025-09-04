@@ -1,12 +1,24 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-from sqlalchemy import Text, DateTime, func
+from sqlalchemy import Text, DateTime, func, String
 from typing import Optional, AsyncGenerator
 from datetime import datetime
 
 # Базовый класс для моделей
 class Base(DeclarativeBase):
     pass
+
+# Модель пользователей
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(50), unique=True, index=True)
+    hashed_password: Mapped[str] = mapped_column(String(100))
+    role: Mapped[str] = mapped_column(String(20))  # admin или support
+    is_active: Mapped[bool] = mapped_column(default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    last_login: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 # Модель очков
 class Product(Base):

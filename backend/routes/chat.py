@@ -1,9 +1,10 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
-from models import get_db
+from models import get_db, User
 from services.ai_service import ai_service
 from services.backup_service import backup_service
+from utils.auth_middleware import get_current_active_user
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import asyncio
@@ -20,7 +21,11 @@ class ChatResponse(BaseModel):
 router = APIRouter()
 
 @router.post("/query", response_model=ChatResponse)
-async def process_query(chat_query: ChatQuery, db: AsyncSession = Depends(get_db)):
+async def process_query(
+    chat_query: ChatQuery, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Обработка запроса на естественном языке"""
     sql = await ai_service.generate_sql(chat_query.query, chat_query.history)
 
@@ -55,7 +60,10 @@ async def process_query(chat_query: ChatQuery, db: AsyncSession = Depends(get_db
 
 # Заглушка для генерации отчетов (расширить позже)
 @router.post("/generate-report")
-async def generate_report(chat_query: ChatQuery):
+async def generate_report(
+    chat_query: ChatQuery,
+    current_user: User = Depends(get_current_active_user)
+):
     """Генерация отчета на основе запроса"""
     # TODO: Реализовать генерацию Excel/PDF
     return {"message": "Генерация отчетов пока не реализована", "query": chat_query.query, "history": chat_query.history}

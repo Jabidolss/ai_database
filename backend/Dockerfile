@@ -1,15 +1,21 @@
-# Use Python 3.9 slim image
+# Python base image
 FROM python:3.9-slim
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    postgresql-client \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+# Proxy build args (optional)
+ARG HTTP_PROXY
+ARG HTTPS_PROXY
+ARG NO_PROXY
+
+# Set proxy env for pip if provided
+ENV HTTP_PROXY=${HTTP_PROXY} \
+    HTTPS_PROXY=${HTTPS_PROXY} \
+    NO_PROXY=${NO_PROXY} \
+    PIP_DEFAULT_TIMEOUT=100
+
+# System packages: none required for runtime; keep image minimal
 
 # Copy requirements and install Python dependencies
 COPY requirements.txt .
@@ -26,9 +32,11 @@ USER app
 # Expose port
 EXPOSE 8000
 
-# Health check
+# Health check without curl
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD curl -f http://localhost:8000/ || exit 1
+    CMD python -c "import sys,urllib.request; \
+import socket; socket.setdefaulttimeout(5); \
+urllib.request.urlopen('http://localhost:8000/', timeout=5)"
 
 # Run the application
 CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]

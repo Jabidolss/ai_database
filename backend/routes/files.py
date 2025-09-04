@@ -2,11 +2,12 @@ from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
-from models import Product, ColumnMappingSetting, get_db
+from models import Product, ColumnMappingSetting, get_db, User
 from services.ai_service import ai_service
 from services.excel_processor import excel_processor
 from services.advanced_excel_processor import advanced_excel_processor
 from services.s3_service import s3_service
+from utils.auth_middleware import get_current_active_user
 from pydantic import BaseModel
 from typing import Dict, List, Any
 import pandas as pd
@@ -28,7 +29,11 @@ class ConfirmResponse(BaseModel):
 router = APIRouter()
 
 @router.post("/excel", response_model=UploadResponse)
-async def upload_excel(file: UploadFile = File(...), db: AsyncSession = Depends(get_db)):
+async def upload_excel(
+    file: UploadFile = File(...), 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Загрузка Excel файла с расширенным анализом структуры"""
     if not file.filename.endswith(('.xlsx', '.xls')):
         raise HTTPException(status_code=400, detail="Файл должен быть Excel (.xlsx или .xls)")
@@ -76,7 +81,8 @@ async def upload_excel(file: UploadFile = File(...), db: AsyncSession = Depends(
 async def confirm_mapping(
     file: UploadFile = File(...),
     mapping_data: str = Form(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
 ):
     """Подтверждение маппинга и вставка данных с обработкой извлеченных изображений"""
     content = await file.read()
@@ -308,7 +314,10 @@ async def confirm_mapping(
         raise HTTPException(status_code=400, detail=f"Ошибка вставки данных: {e}")
 
 @router.post("/images")
-async def upload_images(file: UploadFile = File(...)):
+async def upload_images(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_active_user)
+):
     """Загрузка архива с изображениями"""
     if not file.filename.endswith('.zip'):
         raise HTTPException(status_code=400, detail="Файл должен быть ZIP архивом")

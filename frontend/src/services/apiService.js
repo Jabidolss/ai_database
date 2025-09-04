@@ -1,6 +1,6 @@
 import axios from 'axios'
 
-const API_BASE_URL = process.env.VUE_APP_API_URL || 'http://127.0.0.1:8000/api'
+const API_BASE_URL = process.env.VUE_APP_API_URL || '/api'
 
 const api = axios.create({
   baseURL: API_BASE_URL,
@@ -10,16 +10,59 @@ const api = axios.create({
   }
 })
 
-// Перехватчик ошибок
+// Добавляем токен авторизации к каждому запросу
+api.interceptors.request.use(
+  config => {
+    const token = localStorage.getItem('access_token')
+    if (token) {
+      config.headers.Authorization = `Bearer ${token}`
+    }
+    return config
+  },
+  error => {
+    return Promise.reject(error)
+  }
+)
+
+// Перехватчик ошибок и обработка 401
 api.interceptors.response.use(
   response => response,
   error => {
     console.error('API Error:', error)
+    
+    // Если 401 - токен недействителен, перенаправляем на логин
+    if (error.response?.status === 401 && window.location.pathname !== '/login') {
+      localStorage.removeItem('access_token')
+      localStorage.removeItem('user_info')
+      window.location.href = '/login'
+    }
+    
     return Promise.reject(error)
   }
 )
 
 export default {
+  // Авторизация
+  async login(credentials) {
+    const response = await api.post('/auth/login', credentials)
+    return response.data
+  },
+
+  async getCurrentUser() {
+    const response = await api.get('/auth/me')
+    return response.data
+  },
+
+  async changePassword(passwordData) {
+    const response = await api.post('/auth/change-password', passwordData)
+    return response.data
+  },
+
+  async logout() {
+    const response = await api.post('/auth/logout')
+    return response.data
+  },
+
   // Продукты
   getProducts(params = {}) {
     return api.get('/products', { params })

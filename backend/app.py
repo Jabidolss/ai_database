@@ -6,10 +6,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 
 # Импорт моделей для создания таблиц при старте
-from models import engine, Base
-
-# Роуты (добавим позже)
-# from routes import api, chat, files
+from models import engine, Base, get_db
+from services.auth_service import AuthService
 
 # Lifespan для инициализации БД
 @asynccontextmanager
@@ -17,6 +15,12 @@ async def lifespan(app: FastAPI):
     # Создание таблиц при старте
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+    
+    # Создание пользователей по умолчанию
+    async for db in get_db():
+        await AuthService.create_default_users(db)
+        break
+    
     yield
     # Очистка при завершении, если нужно
 
@@ -37,7 +41,8 @@ app.add_middleware(
 )
 
 # Подключение роутов (раскомментировать по мере реализации)
-from routes import api, chat, files, mapping_settings, images
+from routes import api, chat, files, mapping_settings, images, auth
+app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
 app.include_router(api.router, prefix="/api", tags=["products"])
 app.include_router(chat.router, prefix="/api/chat", tags=["chat"])
 app.include_router(files.router, prefix="/api/upload", tags=["files"])
@@ -51,4 +56,8 @@ async def root():
 # Для простого health check
 @app.get("/health")
 async def health():
+    return {"status": "ok"}
+
+@app.get("/api/health")
+async def api_health():
     return {"status": "ok"}

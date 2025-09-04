@@ -1,8 +1,9 @@
 from fastapi import APIRouter, UploadFile, File, Depends, HTTPException, Form
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, text
-from models import get_db
+from models import get_db, User
 from services.s3_service import s3_service
+from utils.auth_middleware import get_current_active_user
 from pydantic import BaseModel
 from typing import List, Dict, Any, Optional
 import os
@@ -33,7 +34,11 @@ class BrowseResponse(BaseModel):
     currentPath: str
 
 @router.get("/browse", response_model=BrowseResponse)
-async def browse_images(path: str = "/", db: AsyncSession = Depends(get_db)):
+async def browse_images(
+    path: str = "/", 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Просмотр папок и изображений в указанном пути"""
     try:
         result = await s3_service.list_folder_contents(path)

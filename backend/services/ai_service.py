@@ -7,8 +7,8 @@ from typing import Dict, List, Optional
 from pydantic import BaseModel
 from openai import AsyncOpenAI
 
-# Прокси настройки
-PROXY_URL = "http://Zf5ACR:hW71hL@138.219.72.55:8000"
+# Прокси настройки из окружения (опционально)
+PROXY_URL = os.getenv("HTTP_PROXY") or os.getenv("HTTPS_PROXY")
 
 # Схема БД для промптов (специализированная база данных очков)
 DB_SCHEMA = """
@@ -38,8 +38,11 @@ class AiService:
     def __init__(self):
         # Настраиваем httpx клиент с жёстко указанным прокси
         logger = logging.getLogger(__name__)
-        logger.info(f"Используется прокси для OpenAI: {PROXY_URL}")
-        http_client = httpx.AsyncClient(proxy=PROXY_URL, timeout=30)
+        if PROXY_URL:
+            logger.info(f"Используется прокси для OpenAI: {PROXY_URL}")
+            http_client = httpx.AsyncClient(proxy=PROXY_URL, timeout=30)
+        else:
+            http_client = httpx.AsyncClient(timeout=30)
 
         self.client = AsyncOpenAI(
             api_key=os.getenv("OPENAI_API_KEY"),

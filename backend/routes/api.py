@@ -2,8 +2,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
-from models import Product, get_db
+from models import Product, get_db, User
 from services.backup_service import backup_service
+from utils.auth_middleware import get_current_active_user, require_admin
 from pydantic import BaseModel
 from typing import List, Optional
 import pandas as pd
@@ -114,7 +115,11 @@ async def get_products(
     )
 
 @router.post("/products", response_model=ProductResponse)
-async def create_product(product: ProductCreate, db: AsyncSession = Depends(get_db)):
+async def create_product(
+    product: ProductCreate, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Создание нового товара"""
     db_product = Product(**product.dict())
     db.add(db_product)
@@ -188,7 +193,12 @@ async def get_product(product_id: int, db: AsyncSession = Depends(get_db)):
     return product
 
 @router.put("/products/{product_id}", response_model=ProductResponse)
-async def update_product(product_id: int, product_update: ProductUpdate, db: AsyncSession = Depends(get_db)):
+async def update_product(
+    product_id: int, 
+    product_update: ProductUpdate, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Обновление товара по ID"""
     result = await db.execute(select(Product).where(Product.id == product_id))
     db_product = result.scalar_one_or_none()
@@ -201,8 +211,12 @@ async def update_product(product_id: int, product_update: ProductUpdate, db: Asy
     return db_product
 
 @router.delete("/products/{product_id}")
-async def delete_product(product_id: int, db: AsyncSession = Depends(get_db)):
-    """Удаление товара по ID"""
+async def delete_product(
+    product_id: int, 
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin)
+):
+    """Удаление товара по ID (только для админа)"""
     result = await db.execute(select(Product).where(Product.id == product_id))
     db_product = result.scalar_one_or_none()
     if not db_product:
@@ -368,8 +382,8 @@ async def export_products(
         raise HTTPException(status_code=500, detail=f"Ошибка экспорта: {str(e)}")
 
 @router.post("/restore-database")
-async def restore_database():
-    """Восстановление базы данных из последнего бэкапа"""
+async def restore_database(current_user: User = Depends(require_admin)):
+    """Восстановление базы данных из последнего бэкапа (только для админа)"""
     try:
         success = await backup_service.restore_backup()
         if success:
