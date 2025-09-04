@@ -1,4 +1,5 @@
 import boto3
+from botocore.config import Config
 import zipfile
 import io
 from typing import List, Dict
@@ -17,7 +18,8 @@ class S3Service:
                 endpoint_url=endpoint_url,
                 aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
                 aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-                region_name=os.getenv('AWS_REGION', 'ru-1')
+                region_name=os.getenv('AWS_REGION', 'ru-1'),
+                config=Config(signature_version='s3v4')
             )
         else:
             # Для оригинального AWS S3
@@ -25,11 +27,29 @@ class S3Service:
                 's3',
                 aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
                 aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY'),
-                region_name=os.getenv('AWS_REGION', 'us-east-1')
+                region_name=os.getenv('AWS_REGION', 'us-east-1'),
+                config=Config(signature_version='s3v4')
             )
         
         self.bucket = os.getenv('S3_BUCKET_NAME', 'ai-database-images')
         self.endpoint_url = endpoint_url
+
+    def _build_object_url(self, key: str, expires_in: int = 60 * 60 * 24 * 7) -> str:
+        """Строит URL для доступа к объекту. Пытается сгенерировать presigned URL, иначе возвращает прямой путь."""
+        try:
+            # Предпочитаем presigned URL, чтобы работало даже без публичного доступа
+            url = self.s3.generate_presigned_url(
+                'get_object',
+                Params={'Bucket': self.bucket, 'Key': key},
+                ExpiresIn=expires_in
+            )
+            return url
+        except Exception:
+            # Фолбэк на прямой URL
+            if self.endpoint_url:
+                return f"{self.endpoint_url}/{self.bucket}/{key}"
+            else:
+                return f"https://{self.bucket}.s3.amazonaws.com/{key}"
 
     async def upload_images_from_zip(self, zip_content: bytes) -> Dict[str, List[str]]:
         """Распаковка ZIP и загрузка изображений в S3"""
@@ -51,12 +71,8 @@ class S3Service:
                                 Body=file_content,
                                 ContentType=self._get_content_type(filename)
                             )
-
-                            # Формируем URL с учетом endpoint
-                            if self.endpoint_url:
-                                url = f"{self.endpoint_url}/{self.bucket}/{key}"
-                            else:
-                                url = f"https://{self.bucket}.s3.amazonaws.com/{key}"
+                            # Формируем URL для просмотра
+                            url = self._build_object_url(key)
                             
                             uploaded.append({"filename": filename, "url": url})
                         except Exception as e:
@@ -78,68 +94,64 @@ class S3Service:
             Body=image_data,
             ContentType=self._get_content_type(filename)
         )
-        
-        # Формируем URL с учетом endpoint
-        if self.endpoint_url:
-            return f"{self.endpoint_url}/{self.bucket}/{key}"
-        else:
-            return f"https://{self.bucket}.s3.amazonaws.com/{key}"
+        # Возвращаем URL для просмотра (presigned)
+        return self._build_object_url(key)
 
     async def list_folder_contents(self, folder_path: str = "/") -> Dict[str, List[Dict]]:
         """Получение содержимого папки (эмуляция файловой системы в S3)"""
         try:
             # Нормализуем путь
             prefix = folder_path.strip('/') + '/' if folder_path != '/' else ''
-            
-            response = self.s3.list_objects_v2(
-                Bucket=self.bucket,
-                Prefix=prefix,
-                Delimiter='/'
-            )
-            
-            folders = []
+            print(f"DEBUG S3: Получение содержимого папки '{folder_path}', prefix: '{prefix}'")
+            print(f"DEBUG S3: S3 настройки - bucket: {self.bucket}, endpoint: {self.endpoint_url}")
+
+            paginator = self.s3.get_paginator('list_objects_v2')
+            folders_set = set()
             images = []
-            
-            # Получаем "папки" (префиксы)
-            for prefix_info in response.get('CommonPrefixes', []):
-                folder_name = prefix_info['Prefix'].rstrip('/').split('/')[-1]
-                if folder_name:  # Исключаем пустые названия
-                    folders.append({
-                        'id': prefix_info['Prefix'],
-                        'name': folder_name,
-                        'path': '/' + prefix_info['Prefix'].rstrip('/'),
-                        'itemCount': await self._count_folder_items(prefix_info['Prefix']),
-                        'updatedAt': datetime.now().isoformat()
-                    })
-            
-            # Получаем файлы (изображения)
-            for obj in response.get('Contents', []):
-                if obj['Key'] != prefix and obj['Key'].lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix, Delimiter='/'):
+                for prefix_info in page.get('CommonPrefixes', []):
+                    folders_set.add(prefix_info['Prefix'])
+
+                for obj in page.get('Contents', []):
+                    if obj['Key'] == prefix:
+                        continue
+                    if not obj['Key'].lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                        continue
                     filename = obj['Key'].split('/')[-1]
-                    
-                    # Формируем URL с учетом endpoint
-                    if self.endpoint_url:
-                        url = f"{self.endpoint_url}/{self.bucket}/{obj['Key']}"
-                    else:
-                        url = f"https://{self.bucket}.s3.amazonaws.com/{obj['Key']}"
-                    
+                    url = self._build_object_url(obj['Key'])
                     images.append({
                         'id': obj['Key'],
                         'name': filename,
                         'path': '/' + obj['Key'],
                         'url': url,
-                        'thumbnailUrl': url,  # Можно добавить генерацию миниатюр
-                        'size': obj['Size'],
-                        'updatedAt': obj['LastModified'].isoformat()
+                        'thumbnailUrl': url,
+                        'size': obj.get('Size', 0),
+                        'updatedAt': obj.get('LastModified').isoformat() if obj.get('LastModified') else datetime.now().isoformat()
                     })
-            
-            return {
-                'folders': folders,
-                'images': images
-            }
+
+            folders = []
+            for folder_prefix in sorted(folders_set):
+                folder_name = folder_prefix.rstrip('/').split('/')[-1]
+                if not folder_name:
+                    continue
+                folders.append({
+                    'id': folder_prefix,
+                    'name': folder_name,
+                    'path': '/' + folder_prefix.rstrip('/'),
+                    'itemCount': await self._count_folder_items(folder_prefix),
+                    'updatedAt': datetime.now().isoformat()
+                })
+
+            print(f"DEBUG S3: Найдено папок: {len(folders)}, изображений: {len(images)}")
+
+            return {'folders': folders, 'images': images}
             
         except Exception as e:
-            print(f"Ошибка получения содержимого папки {folder_path}: {e}")
+            print(f"DEBUG S3: ОШИБКА получения содержимого папки {folder_path}: {e}")
+            print(f"DEBUG S3: Тип ошибки: {type(e)}")
+            import traceback
+            traceback.print_exc()
             return {'folders': [], 'images': []}
 
     async def create_folder(self, parent_path: str, folder_name: str) -> str:
@@ -161,18 +173,17 @@ class S3Service:
     async def delete_folder(self, folder_path: str):
         """Удаление папки и всего её содержимого"""
         prefix = folder_path.strip('/') + '/'
-        
-        # Получаем все объекты в папке
-        response = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
-        
-        if 'Contents' in response:
-            # Удаляем все объекты
-            objects_to_delete = [{'Key': obj['Key']} for obj in response['Contents']]
-            
-            self.s3.delete_objects(
-                Bucket=self.bucket,
-                Delete={'Objects': objects_to_delete}
-            )
+
+        paginator = self.s3.get_paginator('list_objects_v2')
+        batch = []
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+            for obj in page.get('Contents', []):
+                batch.append({'Key': obj['Key']})
+                if len(batch) == 1000:
+                    self.s3.delete_objects(Bucket=self.bucket, Delete={'Objects': batch})
+                    batch = []
+        if batch:
+            self.s3.delete_objects(Bucket=self.bucket, Delete={'Objects': batch})
 
     async def rename_folder(self, old_path: str, new_name: str) -> str:
         """Переименование папки (копирование всех объектов с новым префиксом)"""
@@ -182,23 +193,17 @@ class S3Service:
         path_parts = old_path.strip('/').split('/')
         path_parts[-1] = new_name
         new_prefix = '/'.join(path_parts) + '/'
-        
-        # Получаем все объекты в старой папке
-        response = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=old_prefix)
-        
-        if 'Contents' in response:
-            for obj in response['Contents']:
+
+        paginator = self.s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=old_prefix):
+            for obj in page.get('Contents', []):
                 old_key = obj['Key']
                 new_key = old_key.replace(old_prefix, new_prefix, 1)
-                
-                # Копируем объект
                 self.s3.copy_object(
                     Bucket=self.bucket,
                     CopySource={'Bucket': self.bucket, 'Key': old_key},
                     Key=new_key
                 )
-                
-                # Удаляем старый объект
                 self.s3.delete_object(Bucket=self.bucket, Key=old_key)
         
         return new_prefix
@@ -211,49 +216,49 @@ class S3Service:
             Bucket=self.bucket,
             Key=key,
             Body=image_data,
-            ContentType=self._get_content_type(file_path)
+            ContentType=self._get_content_type(file_path),
+            ACL='public-read'
         )
         
-        # Формируем URL с учетом endpoint
-        if self.endpoint_url:
-            return f"{self.endpoint_url}/{self.bucket}/{key}"
-        else:
-            return f"https://{self.bucket}.s3.amazonaws.com/{key}"
+        return self._build_object_url(key)
 
     async def upload_zip_to_folder(self, zip_content: bytes, folder_path: str) -> Dict:
-        """Загрузка и распаковка ZIP в указанную папку"""
+        """Загрузка и распаковка ZIP в указанную папку с сохранением структуры"""
         uploaded = []
         failed = []
-        
+
         try:
-            folder_prefix = folder_path.strip('/') + '/' if folder_path != '/' else ''
-            
+            base_prefix = folder_path.strip('/') + '/' if folder_path != '/' else ''
+
             with zipfile.ZipFile(io.BytesIO(zip_content), 'r') as zip_ref:
-                for file_info in zip_ref.filelist:
-                    if file_info.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                        try:
-                            file_content = zip_ref.read(file_info.filename)
-                            filename = os.path.basename(file_info.filename)
-                            key = f"{folder_prefix}{filename}"
+                for file_info in zip_ref.infolist():
+                    name = file_info.filename
+                    # Нормализуем путь и предотвращаем zip slip
+                    norm = os.path.normpath(name)
+                    if norm.startswith('..') or norm.startswith('/'):
+                        failed.append({"filename": name, "error": "Invalid path in zip"})
+                        continue
 
-                            self.s3.put_object(
-                                Bucket=self.bucket,
-                                Key=key,
-                                Body=file_content,
-                                ContentType=self._get_content_type(filename)
-                            )
+                    # Пропускаем каталоги (S3 папки создаются неявно ключами)
+                    if name.endswith('/'):
+                        continue
 
-                            # Формируем URL с учетом endpoint
-                            if self.endpoint_url:
-                                url = f"{self.endpoint_url}/{self.bucket}/{key}"
-                            else:
-                                url = f"https://{self.bucket}.s3.amazonaws.com/{key}"
-                            
-                            uploaded.append({"filename": filename, "url": url, "size": len(file_content)})
-                        except Exception as e:
-                            failed.append({"filename": file_info.filename, "error": str(e)})
-                    else:
-                        failed.append({"filename": file_info.filename, "error": "Неподдерживаемый формат"})
+                    try:
+                        file_content = zip_ref.read(file_info)
+                        # Сохраняем подкаталоги из архива
+                        key = f"{base_prefix}{norm}"
+                        content_type = self._get_content_type(norm)
+
+                        self.s3.put_object(
+                            Bucket=self.bucket,
+                            Key=key,
+                            Body=file_content,
+                            ContentType=content_type
+                        )
+                        url = self._build_object_url(key)
+                        uploaded.append({"filename": norm, "url": url, "size": len(file_content)})
+                    except Exception as e:
+                        failed.append({"filename": name, "error": str(e)})
         except Exception as e:
             return {"uploaded": [], "failed": [{"filename": "archive", "error": f"Ошибка распаковки: {e}"}]}
 
@@ -289,32 +294,31 @@ class S3Service:
         """Поиск изображений по названию"""
         try:
             prefix = folder_path.strip('/') + '/' if folder_path != '/' else ''
-            
-            response = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
-            
+
             results = []
-            if 'Contents' in response:
-                for obj in response['Contents']:
-                    if (obj['Key'].lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')) and
-                        query.lower() in obj['Key'].lower()):
-                        
-                        filename = obj['Key'].split('/')[-1]
-                        
-                        # Формируем URL с учетом endpoint
-                        if self.endpoint_url:
-                            url = f"{self.endpoint_url}/{self.bucket}/{obj['Key']}"
-                        else:
-                            url = f"https://{self.bucket}.s3.amazonaws.com/{obj['Key']}"
-                        
-                        results.append({
-                            'id': obj['Key'],
-                            'name': filename,
-                            'path': '/' + obj['Key'],
-                            'url': url,
-                            'size': obj['Size'],
-                            'updatedAt': obj['LastModified'].isoformat()
-                        })
-            
+            max_results = 500
+            paginator = self.s3.get_paginator('list_objects_v2')
+            q = query.lower()
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix):
+                for obj in page.get('Contents', []):
+                    key = obj['Key']
+                    if not key.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
+                        continue
+                    if q and q not in key.lower():
+                        continue
+                    filename = key.split('/')[-1]
+                    url = self._build_object_url(key)
+                    results.append({
+                        'id': key,
+                        'name': filename,
+                        'path': '/' + key,
+                        'url': url,
+                        'size': obj.get('Size', 0),
+                        'updatedAt': obj.get('LastModified').isoformat() if obj.get('LastModified') else datetime.now().isoformat()
+                    })
+                    if len(results) >= max_results:
+                        return results
+
             return results
             
         except Exception as e:
@@ -322,11 +326,16 @@ class S3Service:
             return []
 
     async def _count_folder_items(self, prefix: str) -> int:
-        """Подсчет количества элементов в папке"""
+        """Подсчет количества элементов в папке (только прямые дети: файлы и подпапки)"""
         try:
-            response = self.s3.list_objects_v2(Bucket=self.bucket, Prefix=prefix)
-            return len(response.get('Contents', []))
-        except:
+            paginator = self.s3.get_paginator('list_objects_v2')
+            total = 0
+            for page in paginator.paginate(Bucket=self.bucket, Prefix=prefix, Delimiter='/'):
+                total += len(page.get('Contents', []))
+                total += len(page.get('CommonPrefixes', []))
+            return total
+        except Exception as e:
+            print(f"DEBUG S3: Ошибка подсчета элементов для {prefix}: {e}")
             return 0
 
     def _get_content_type(self, filename: str) -> str:

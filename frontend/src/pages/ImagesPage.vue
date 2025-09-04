@@ -7,14 +7,8 @@
           <template #content>
             <Breadcrumb :model="breadcrumbItems" class="mb-3">
               <template #item="{ item, props }">
-                <router-link v-if="item.route" v-slot="{ href, navigate }" :to="item.route" custom>
-                  <a :href="href" @click="navigate" v-bind="props.action">
-                    <span :class="[item.icon, 'text-color']" />
-                    <span class="text-primary font-semibold">{{ item.label }}</span>
-                  </a>
-                </router-link>
-                <a v-else :href="item.url" :target="item.target" v-bind="props.action">
-                  <span class="text-color">{{ item.label }}</span>
+                <a href="#" @click.prevent="navigateBreadcrumb(item)" v-bind="props.action">
+                  <span class="text-primary font-semibold">{{ item.label }}</span>
                 </a>
               </template>
             </Breadcrumb>
@@ -139,7 +133,7 @@
                       <img 
                         :src="image.thumbnailUrl || image.url" 
                         :alt="image.name"
-                        class="w-full h-4rem object-cover border-round"
+                        class="w-full h-full object-cover border-round"
                         @error="handleImageError"
                       />
                     </div>
@@ -258,8 +252,6 @@
       mode="advanced"
       multiple
       accept="image/*"
-      :maxFileSize="10000000"
-      :fileLimit="20"
       @select="onImageSelect"
       @upload="onImageUpload"
       @clear="onImageClear"
@@ -294,7 +286,6 @@
       ref="zipUpload"
       mode="basic"
       accept=".zip"
-      :maxFileSize="100000000"
       chooseLabel="Выбрать ZIP файл"
       @select="onZipSelect"
     />
@@ -446,18 +437,23 @@ const contextMenuItems = ref([])
 
 // Хлебные крошки
 const breadcrumbItems = computed(() => {
-  const items = [{ label: 'Корневая папка', route: '/images' }]
-  
+  const items = [{ label: 'Корневая папка', path: '/' }]
   if (currentPath.value !== '/') {
-    const pathParts = currentPath.value.split('/').filter(part => part)
-    pathParts.forEach((part, index) => {
-      const route = '/' + pathParts.slice(0, index + 1).join('/')
-      items.push({ label: part, route: `/images${route}` })
+    const parts = currentPath.value.split('/').filter(Boolean)
+    parts.forEach((part, idx) => {
+      const path = '/' + parts.slice(0, idx + 1).join('/')
+      items.push({ label: part, path })
     })
   }
-  
   return items
 })
+
+const navigateBreadcrumb = (item) => {
+  if (item?.path != null) {
+    currentPath.value = item.path
+    loadData()
+  }
+}
 
 // Фильтрованные данные
 const filteredFolders = computed(() => {
@@ -788,6 +784,11 @@ onMounted(() => {
   border: 1px solid var(--surface-border);
   border-radius: 4px;
   overflow: hidden;
+  width: 100%;
+  height: 6rem;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .image-thumbnail img {

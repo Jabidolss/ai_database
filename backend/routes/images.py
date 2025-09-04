@@ -51,7 +51,11 @@ async def browse_images(
         raise HTTPException(status_code=400, detail=f"Ошибка просмотра папки: {e}")
 
 @router.post("/folders")
-async def create_folder(folder_data: FolderCreate, db: AsyncSession = Depends(get_db)):
+async def create_folder(
+    folder_data: FolderCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Создание новой папки"""
     try:
         result = await s3_service.create_folder(folder_data.parentPath, folder_data.name)
@@ -60,7 +64,11 @@ async def create_folder(folder_data: FolderCreate, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=400, detail=f"Ошибка создания папки: {e}")
 
 @router.delete("/folders")
-async def delete_folder(delete_data: DeleteRequest, db: AsyncSession = Depends(get_db)):
+async def delete_folder(
+    delete_data: DeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Удаление папки"""
     try:
         await s3_service.delete_folder(delete_data.path)
@@ -69,7 +77,11 @@ async def delete_folder(delete_data: DeleteRequest, db: AsyncSession = Depends(g
         raise HTTPException(status_code=400, detail=f"Ошибка удаления папки: {e}")
 
 @router.put("/folders/rename")
-async def rename_folder(rename_data: FolderRename, db: AsyncSession = Depends(get_db)):
+async def rename_folder(
+    rename_data: FolderRename,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Переименование папки"""
     try:
         result = await s3_service.rename_folder(rename_data.oldPath, rename_data.newName)
@@ -81,26 +93,19 @@ async def rename_folder(rename_data: FolderRename, db: AsyncSession = Depends(ge
 async def upload_images_to_folder(
     folderPath: str = Form(...),
     images: List[UploadFile] = File(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
 ):
     """Загрузка изображений в указанную папку"""
     try:
         uploaded_files = []
         failed_files = []
-        
+
         for image in images:
-            if not image.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp')):
-                failed_files.append({
-                    "filename": image.filename,
-                    "error": "Неподдерживаемый формат файла"
-                })
-                continue
-            
             try:
                 content = await image.read()
                 file_path = f"{folderPath.strip('/')}/{image.filename}" if folderPath != "/" else image.filename
                 url = await s3_service.upload_image_to_path(content, file_path)
-                
                 uploaded_files.append({
                     "filename": image.filename,
                     "url": url,
@@ -111,7 +116,7 @@ async def upload_images_to_folder(
                     "filename": image.filename,
                     "error": str(e)
                 })
-        
+
         return {
             "uploaded": uploaded_files,
             "failed": failed_files,
@@ -124,7 +129,8 @@ async def upload_images_to_folder(
 async def upload_zip_to_folder(
     folderPath: str = Form(...),
     zipFile: UploadFile = File(...),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
 ):
     """Загрузка и распаковка ZIP архива в указанную папку"""
     if not zipFile.filename.endswith('.zip'):
@@ -138,7 +144,11 @@ async def upload_zip_to_folder(
         raise HTTPException(status_code=400, detail=f"Ошибка загрузки ZIP: {e}")
 
 @router.delete("/delete")
-async def delete_image(delete_data: DeleteRequest, db: AsyncSession = Depends(get_db)):
+async def delete_image(
+    delete_data: DeleteRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Удаление изображения"""
     try:
         await s3_service.delete_image_by_path(delete_data.path)
@@ -147,7 +157,11 @@ async def delete_image(delete_data: DeleteRequest, db: AsyncSession = Depends(ge
         raise HTTPException(status_code=400, detail=f"Ошибка удаления изображения: {e}")
 
 @router.put("/rename")
-async def rename_image(rename_data: ImageRename, db: AsyncSession = Depends(get_db)):
+async def rename_image(
+    rename_data: ImageRename,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
+):
     """Переименование изображения"""
     try:
         result = await s3_service.rename_image(rename_data.oldPath, rename_data.newName)
@@ -159,7 +173,8 @@ async def rename_image(rename_data: ImageRename, db: AsyncSession = Depends(get_
 async def search_images(
     query: str = "",
     folder: str = "/",
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user)
 ):
     """Поиск изображений по названию"""
     try:
