@@ -1,0 +1,349 @@
+/* Глобальные стили для темной темы */
+
+/* Скрытие скроллбаров по умолчанию */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--surface-400);
+  border-radius: 3px;
+  border: 1px solid var(--surface-200);
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--surface-500);
+}
+
+/* Темная тема для скроллбаров */
+.dark-mode ::-webkit-scrollbar-thumb {
+  background: var(--surface-600);
+  border-color: var(--surface-700);
+}
+
+.dark-mode ::-webkit-scrollbar-thumb:hover {
+  background: var(--surface-500);
+}
+
+/* Плавные переходы для всех элементов */
+* {
+  transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+}
+
+/* Улучшенная типографика */
+body {
+  font-feature-settings: "liga" 1, "kern" 1;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  overflow-x: hidden; /* Глобально запрещаем горизонтальную прокрутку страницы */
+}
+
+/* Единообразные заголовки */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-weight: 600;
+  line-height: 1.2;
+  letter-spacing: -0.025em;
+}
+
+h1 {
+  font-size: 2rem;
+  font-weight: 700;
+}
+
+h2 {
+  font-size: 1.5rem;
+  font-weight: 600;
+}
+
+h3 {
+  font-size: 1.25rem;
+  font-weight: 600;
+}
+
+h4 {
+  font-size: 1.125rem;
+  font-weight: 600;
+}
+
+h5 {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+h6 {
+  font-size: 0.875rem;
+  font-weight: 600;
+}
+
+/* Принудительное использование шрифта Inter для всех PrimeVue компонентов, кроме иконок */
+.p-component, .p-component * {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+/* Исключение для иконок - они должны использовать свой шрифт */
+.p-component i, .p-component .pi, [class^="pi-"], [class*=" pi-"] {
+  font-family: 'primeicons' !important;
+}
+
+/* Специфичные стили для PrimeVue DataTable */
+.p-datatable {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+.p-datatable th {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-weight: 600 !important;
+}
+
+.p-datatable td {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+.p-chip {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+.p-button {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+.p-inputtext, .p-textarea {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+.p-dialog {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+.p-dialog-header {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+.p-dialog-title {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-weight: 600 !important;
+}
+
+.p-card {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+}
+
+.p-card-title {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  font-weight: 600 !important;
+}
+
+/* Глобальные правила для иконок */
+i, .pi, [class^="pi-"], [class*=" pi-"] {
+  font-family: 'primeicons' !important;
+  font-style: normal !important;
+  font-weight: normal !important;
+  font-variant: normal !important;
+  text-transform: none !important;
+  line-height: 1 !important;
+  -webkit-font-smoothing: antialiased !important;
+  -moz-osx-font-smoothing: grayscale !important;
+}
+
+/* Улучшение полей ввода PrimeVue */
+.p-inputtext, .p-textarea {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  color: #1f2937 !important; /* Темно-серый цвет текста */
+  background: #ffffff !important; /* Белый фон */
+  border-color: #d1d5db !important; /* Серая граница */
+}
+
+.p-inputtext::placeholder, .p-textarea::placeholder {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif !important;
+  color: #6b7280 !important; /* Серый цвет для placeholder */
+  opacity: 0.7 !important;
+}
+
+.p-inputtext:focus, .p-textarea:focus {
+  border-color: #3b82f6 !important; /* Синяя граница при фокусе */
+  box-shadow: 0 0 0 0.2rem rgba(59, 130, 246, 0.2) !important;
+}
+
+.dark-mode .p-inputtext, .dark-mode .p-textarea {
+  color: #e5e7eb !important; /* Светлый цвет для темной темы */
+  background: #374151 !important; /* Темный фон для темной темы */
+  border-color: #4b5563 !important; /* Темная граница */
+}
+
+.dark-mode .p-inputtext::placeholder, .dark-mode .p-textarea::placeholder {
+  color: #9ca3af !important; /* Светло-серый для placeholder в темной теме */
+  opacity: 0.8 !important;
+}
+
+/* Улучшение кнопок PrimeVue */
+.p-button {
+  font-weight: 500 !important;
+  transition: all 0.2s ease !important;
+}
+
+.p-button:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15) !important;
+}
+
+.dark-mode .p-button:hover {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4) !important;
+}
+
+/* Улучшение текстовых полей */
+.p-inputtext, .p-textarea {
+  transition: all 0.2s ease !important;
+}
+
+.p-inputtext:focus, .p-textarea:focus {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(59, 130, 246, 0.15) !important;
+}
+
+/* Улучшение таблиц */
+.p-datatable .p-datatable-header {
+  background: var(--surface-50) !important;
+  border-bottom: 2px solid var(--surface-200) !important;
+}
+
+.dark-mode .p-datatable .p-datatable-header {
+  background: var(--surface-800) !important;
+  border-color: var(--surface-700) !important;
+}
+
+.p-datatable .p-datatable-thead > tr > th {
+  font-weight: 600 !important;
+  color: var(--text-color) !important;
+  background: var(--surface-50) !important;
+}
+
+.dark-mode .p-datatable .p-datatable-thead > tr > th {
+  background: var(--surface-800) !important;
+}
+
+.p-datatable .p-datatable-tbody > tr:hover {
+  background: var(--surface-100) !important;
+}
+
+.dark-mode .p-datatable .p-datatable-tbody > tr:hover {
+  background: var(--surface-700) !important;
+}
+
+/* Анимации появления */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(20px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.fade-in-up {
+  animation: fadeInUp 0.3s ease-out;
+}
+
+/* Пульсация для загрузки */
+@keyframes pulse {
+  0% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+  100% {
+    opacity: 1;
+  }
+}
+
+.pulse {
+  animation: pulse 2s infinite;
+}
+
+/* Улучшенные фокусы для доступности */
+.p-button:focus-visible,
+.p-inputtext:focus-visible,
+.p-textarea:focus-visible {
+  outline: 2px solid var(--primary-color) !important;
+  outline-offset: 2px !important;
+}
+
+/* Улучшение селектов */
+.p-select {
+  transition: all 0.2s ease !important;
+}
+
+.p-select:not(.p-disabled):hover {
+  border-color: var(--primary-color) !important;
+}
+
+/* Стили для сообщений об ошибках */
+.error-shake {
+  animation: shake 0.5s ease-in-out;
+}
+
+@keyframes shake {
+  0%, 100% { transform: translateX(0); }
+  25% { transform: translateX(-5px); }
+  75% { transform: translateX(5px); }
+}
+
+/* Улучшение прогресс спиннера */
+.p-progress-spinner-circle {
+  animation: p-progress-spinner-rotate 2s linear infinite !important;
+}
+
+@keyframes p-progress-spinner-rotate {
+  100% {
+    transform: rotate(360deg);
+  }
+}
+
+/* Медиа запросы для мобильных устройств */
+@media (max-width: 768px) {
+  .p-datatable {
+    font-size: 0.875rem;
+  }
+  
+  .p-button {
+    padding: 0.75rem 1rem !important;
+  }
+  
+  .p-inputtext {
+    padding: 0.75rem !important;
+  }
+}
+
+/* Жестко фиксируем, что основной контейнер приложения не прокручивается по X */
+#app, .app-content, .chat-page, .chat-container, .messages-scroll, .messages-content {
+  overflow-x: hidden !important;
+}
+
+/* Улучшение accessibility */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Высокий контраст для accessibility */
+@media (prefers-contrast: high) {
+  .dark-mode {
+    --surface-0: #000000;
+    --surface-900: #ffffff;
+    --text-color: #ffffff;
+    --text-color-secondary: #cccccc;
+  }
+}
