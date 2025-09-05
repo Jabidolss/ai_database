@@ -223,14 +223,23 @@ class S3Service:
         return self._build_object_url(key)
 
     async def upload_zip_to_folder(self, zip_content: bytes, folder_path: str) -> Dict:
-        """Загрузка и распаковка ZIP в указанную папку с сохранением структуры"""
+        """Загрузка и распаковка ZIP в указанную папку с сохранением структуры (параллельная обработка)"""
+        import asyncio
+        
         uploaded = []
         failed = []
 
         try:
+            # Валидация размера архива (макс 2GB)
+            if len(zip_content) > 2 * 1024 * 1024 * 1024:
+                return {"uploaded": [], "failed": [{"filename": "archive", "error": "Архив слишком большой (максимум 2GB)"}]}
+
             base_prefix = folder_path.strip('/') + '/' if folder_path != '/' else ''
 
             with zipfile.ZipFile(io.BytesIO(zip_content), 'r') as zip_ref:
+                files_to_process = []
+                
+                # Сначала собираем все файлы для обработки
                 for file_info in zip_ref.infolist():
                     name = file_info.filename
                     # Нормализуем путь и предотвращаем zip slip
@@ -242,27 +251,82 @@ class S3Service:
                     # Пропускаем каталоги (S3 папки создаются неявно ключами)
                     if name.endswith('/'):
                         continue
+                    
+                    # Проверяем формат файла
+                    if not name.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff')):
+                        failed.append({"filename": name, "error": "Неподдерживаемый формат файла"})
+                        continue
 
                     try:
                         file_content = zip_ref.read(file_info)
-                        # Сохраняем подкаталоги из архива
-                        key = f"{base_prefix}{norm}"
-                        content_type = self._get_content_type(norm)
-
-                        self.s3.put_object(
-                            Bucket=self.bucket,
-                            Key=key,
-                            Body=file_content,
-                            ContentType=content_type
-                        )
-                        url = self._build_object_url(key)
-                        uploaded.append({"filename": norm, "url": url, "size": len(file_content)})
+                        files_to_process.append((norm, file_content))
                     except Exception as e:
-                        failed.append({"filename": name, "error": str(e)})
+                        failed.append({"filename": name, "error": f"Ошибка чтения файла: {str(e)}"})
+
+                # Ограничиваем количество файлов
+                if len(files_to_process) > 10000:
+                    return {"uploaded": [], "failed": [{"filename": "archive", "error": f"Слишком много файлов в архиве (максимум 10000, найдено {len(files_to_process)})"}]}
+
+                # Семафор для ограничения параллельных операций (максимум 20 одновременных загрузок)
+                semaphore = asyncio.Semaphore(20)
+                
+                async def upload_single_file(norm_path: str, file_content: bytes):
+                    """Загрузка одного файла с семафором"""
+                    async with semaphore:
+                        try:
+                            key = f"{base_prefix}{norm_path}"
+                            content_type = self._get_content_type(norm_path)
+
+                            # Используем asyncio для неблокирующего выполнения
+                            loop = asyncio.get_event_loop()
+                            await loop.run_in_executor(
+                                None,
+                                lambda: self.s3.put_object(
+                                    Bucket=self.bucket,
+                                    Key=key,
+                                    Body=file_content,
+                                    ContentType=content_type
+                                )
+                            )
+                            
+                            url = self._build_object_url(key)
+                            return {"filename": norm_path, "url": url, "size": len(file_content), "status": "success"}
+                        except Exception as e:
+                            return {"filename": norm_path, "error": str(e), "status": "failed"}
+
+                # Создаем задачи для параллельной обработки
+                tasks = [
+                    upload_single_file(norm_path, file_content) 
+                    for norm_path, file_content in files_to_process
+                ]
+
+                # Выполняем все задачи параллельно
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+
+                # Обрабатываем результаты
+                for result in results:
+                    if isinstance(result, Exception):
+                        failed.append({"filename": "unknown", "error": str(result)})
+                    elif result.get("status") == "success":
+                        uploaded.append({
+                            "filename": result["filename"],
+                            "url": result["url"],
+                            "size": result["size"]
+                        })
+                    else:
+                        failed.append({
+                            "filename": result["filename"],
+                            "error": result["error"]
+                        })
+
         except Exception as e:
             return {"uploaded": [], "failed": [{"filename": "archive", "error": f"Ошибка распаковки: {e}"}]}
 
-        return {"uploaded": uploaded, "failed": failed}
+        return {
+            "uploaded": uploaded, 
+            "failed": failed,
+            "message": f"Загружено {len(uploaded)} из {len(uploaded) + len(failed)} файлов"
+        }
 
     async def delete_image_by_path(self, image_path: str):
         """Удаление изображения по пути"""

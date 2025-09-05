@@ -280,22 +280,63 @@
     v-model:visible="showZipUploadDialog" 
     modal 
     header="Загрузить ZIP архив" 
-    :style="{ width: '500px' }"
+    :style="{ width: '600px' }"
+    :closable="!uploading"
+    :closeOnEscape="!uploading"
   >
-    <FileUpload
-      ref="zipUpload"
-      mode="basic"
-      accept=".zip"
-      chooseLabel="Выбрать ZIP файл"
-      @select="onZipSelect"
-    />
+    <div class="flex flex-column gap-3">
+      <FileUpload
+        ref="zipUpload"
+        mode="basic"
+        accept=".zip"
+        chooseLabel="Выбрать ZIP файл"
+        @select="onZipSelect"
+        :disabled="uploading"
+      />
+      
+      <!-- Информация о лимитах -->
+      <div class="text-xs text-500 mt-2 mb-3">
+        <i class="pi pi-info-circle mr-1"></i>
+        Максимум: 2GB архив, 10,000 файлов (только изображения)
+      </div>
+      
+      <!-- Прогресс загрузки -->
+      <div v-if="uploading" class="flex flex-column gap-2">
+        <div class="flex align-items-center justify-content-between">
+          <span class="text-sm font-medium">Загрузка и обработка архива...</span>
+          <span v-if="uploadProgress.total > 0" class="text-sm text-600">
+            {{ uploadProgress.processed }} из {{ uploadProgress.total }} файлов
+          </span>
+        </div>
+        
+        <ProgressBar 
+          :value="uploadProgress.total > 0 ? (uploadProgress.processed / uploadProgress.total) * 100 : null"
+          :showValue="false"
+          class="h-1rem"
+        />
+        
+        <div class="text-xs text-600">
+          <div v-if="uploadProgress.uploaded > 0" class="text-green-600">
+            ✓ Загружено: {{ uploadProgress.uploaded }}
+          </div>
+          <div v-if="uploadProgress.failed > 0" class="text-red-600">
+            ✗ Ошибок: {{ uploadProgress.failed }}
+          </div>
+        </div>
+      </div>
+    </div>
     
     <template #footer>
-      <Button label="Отмена" text @click="showZipUploadDialog = false" />
+      <Button 
+        label="Отмена" 
+        text 
+        @click="cancelZipUpload" 
+        :disabled="uploading && !canCancelUpload"
+      />
       <Button 
         label="Загрузить" 
         @click="uploadZip" 
-        :disabled="!selectedZipFile"
+        :disabled="!selectedZipFile || uploading"
         :loading="uploading"
       />
     </template>
@@ -400,6 +441,7 @@ import DataTable from 'primevue/datatable'
 import Column from 'primevue/column'
 import ContextMenu from 'primevue/contextmenu'
 import Breadcrumb from 'primevue/breadcrumb'
+import ProgressBar from 'primevue/progressbar'
 import apiService from '../services/apiService'
 
 // Реактивные данные
@@ -430,6 +472,15 @@ const uploading = ref(false)
 const itemToRename = ref(null)
 const newItemName = ref('')
 const itemToDelete = ref(null)
+
+// Прогресс загрузки ZIP
+const uploadProgress = ref({
+  total: 0,
+  processed: 0,
+  uploaded: 0,
+  failed: 0
+})
+const canCancelUpload = ref(false)
 
 // Контекстное меню
 const contextMenu = ref()
@@ -599,32 +650,88 @@ const uploadImages = async () => {
 
 const onZipSelect = (event) => {
   selectedZipFile.value = event.files[0]
+  // Сброс прогресса
+  uploadProgress.value = {
+    total: 0,
+    processed: 0,
+    uploaded: 0,
+    failed: 0
+  }
 }
 
 const uploadZip = async () => {
   if (!selectedZipFile.value) return
   
   uploading.value = true
+  canCancelUpload.value = false
+  
+  // Сброс прогресса
+  uploadProgress.value = {
+    total: 0,
+    processed: 0,
+    uploaded: 0,
+    failed: 0
+  }
+  
   try {
-    await apiService.uploadZipToFolder(currentPath.value, selectedZipFile.value)
+    const result = await apiService.uploadZipToFolder(currentPath.value, selectedZipFile.value)
+    
+    // Обновляем прогресс на основе результата
+    uploadProgress.value.total = result.uploaded.length + result.failed.length
+    uploadProgress.value.processed = result.uploaded.length + result.failed.length
+    uploadProgress.value.uploaded = result.uploaded.length
+    uploadProgress.value.failed = result.failed.length
+    
+    const successMsg = result.message || `Загружено ${result.uploaded.length} из ${result.uploaded.length + result.failed.length} файлов`
+    
     toast.add({
-      severity: 'success',
-      summary: 'Успех',
-      detail: 'ZIP архив загружен'
+      severity: result.failed.length === 0 ? 'success' : 'warn',
+      summary: result.failed.length === 0 ? 'Успех' : 'Частично загружено',
+      detail: successMsg,
+      life: 5000
     })
+    
+    if (result.failed.length > 0) {
+      console.warn('Не удалось загрузить файлы:', result.failed)
+    }
+    
     selectedZipFile.value = null
     showZipUploadDialog.value = false
     loadData()
   } catch (error) {
     console.error('Ошибка загрузки ZIP:', error)
+    const errorMsg = error.response?.data?.detail || error.message || 'Не удалось загрузить ZIP архив'
     toast.add({
       severity: 'error',
       summary: 'Ошибка',
-      detail: 'Не удалось загрузить ZIP архив'
+      detail: errorMsg,
+      life: 7000
     })
   } finally {
     uploading.value = false
+    canCancelUpload.value = false
   }
+}
+
+const cancelZipUpload = () => {
+  if (!uploading.value) {
+    showZipUploadDialog.value = false
+    selectedZipFile.value = null
+    uploadProgress.value = {
+      total: 0,
+      processed: 0,
+      uploaded: 0,
+      failed: 0
+    }
+  }
+}
+
+const formatFileSize = (bytes) => {
+  if (bytes === 0) return '0 Bytes'
+  const k = 1024
+  const sizes = ['Bytes', 'KB', 'MB', 'GB']
+  const i = Math.floor(Math.log(bytes) / Math.log(k))
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
 const showContextMenu = (event, item, type) => {
@@ -737,16 +844,6 @@ const downloadImage = (image) => {
   link.href = image.url
   link.download = image.name
   link.click()
-}
-
-const formatFileSize = (bytes) => {
-  if (bytes === 0) return '0 Bytes'
-  
-  const k = 1024
-  const sizes = ['Bytes', 'KB', 'MB', 'GB']
-  const i = Math.floor(Math.log(bytes) / Math.log(k))
-  
-  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i]
 }
 
 const formatDate = (date) => {
