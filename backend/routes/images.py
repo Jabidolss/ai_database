@@ -152,16 +152,58 @@ async def upload_zip_to_folder(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
-    """Загрузка и распаковка ZIP архива в указанную папку"""
+    """Загрузка и распаковка ZIP архива в указанную папку с детальным логированием"""
+    import time
+    
     if not zipFile.filename.endswith('.zip'):
         raise HTTPException(status_code=400, detail="Файл должен быть ZIP архивом")
     
+    start_time = time.time()
+    print(f"🚀 Запуск загрузки ZIP: файл '{zipFile.filename}' в папку '{folderPath}'")
+    
     try:
+        # Валидация размера до чтения содержимого
+        if zipFile.size and zipFile.size > 2 * 1024 * 1024 * 1024:  # 2GB
+            print(f"❌ Архив слишком большой: {zipFile.size} байт (максимум 2GB)")
+            raise HTTPException(status_code=413, detail="Архив слишком большой (максимум 2GB)")
+        
+        # Читаем содержимое архива
+        print(f"📥 Читаем содержимое архива размером {zipFile.size or 'неизвестно'} байт...")
+        read_start = time.time()
         content = await zipFile.read()
+        read_time = time.time() - read_start
+        print(f"✅ Архив прочитан за {read_time:.2f}с, реальный размер: {len(content)} байт ({len(content)/(1024*1024):.1f} MB)")
+        
+        # Запускаем оптимизированную загрузку
+        print(f"🔄 Передаем обработку в S3 сервис...")
         result = await s3_service.upload_zip_to_folder(content, folderPath)
+        
+        total_time = time.time() - start_time
+        
+        # Детальный лог результата
+        success_count = len(result.get('uploaded', []))
+        failed_count = len(result.get('failed', []))
+        replaced_count = result.get('replaced_duplicates', 0)
+        
+        print(f"🏁 Операция завершена за {total_time:.1f}с:")
+        print(f"   📊 Итого обработано: {success_count + failed_count} файлов")
+        print(f"   ✅ Загружено: {success_count}")
+        print(f"   🔄 Дубликатов заменено: {replaced_count}")
+        print(f"   ❌ Ошибок: {failed_count}")
+        
+        if failed_count > 0:
+            print("❗ Первые ошибки:")
+            for error in result.get('failed', [])[:5]:  # Показываем только первые 5 ошибок
+                print(f"   - {error.get('filename', 'unknown')}: {error.get('error', 'unknown error')}")
+        
         return result
+        
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Ошибка загрузки ZIP: {e}")
+        total_time = time.time() - start_time
+        print(f"💥 Критическая ошибка загрузки ZIP за {total_time:.1f}с: {e}")
+        raise HTTPException(status_code=500, detail=f"Ошибка загрузки ZIP: {e}")
 
 @router.delete("/delete")
 async def delete_image(

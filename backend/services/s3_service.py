@@ -209,13 +209,23 @@ class S3Service:
         
         return new_prefix
 
-    async def check_duplicate_image(self, image_data: bytes) -> Dict:
-        """Проверка дубликата изображения по хешу"""
+    async def check_duplicate_image(self, image_data: bytes, hash_cache: Dict[str, Dict] = None) -> Dict:
+        """Проверка дубликата изображения по хешу с кешированием"""
         try:
             # Вычисляем MD5 хеш изображения
             image_hash = hashlib.md5(image_data).hexdigest()
             
-            # Ищем все изображения с таким же хешем в S3
+            # Используем кеш если передан (для массовых операций)
+            if hash_cache is not None:
+                if image_hash in hash_cache:
+                    existing = hash_cache[image_hash]
+                    return {
+                        'is_duplicate': True,
+                        'existing_file': existing
+                    }
+                return {'is_duplicate': False}
+            
+            # Ищем все изображения с таким же хешем в S3 (только для одиночных проверок)
             paginator = self.s3.get_paginator('list_objects_v2')
             
             for page in paginator.paginate(Bucket=self.bucket):
@@ -250,6 +260,40 @@ class S3Service:
             print(f"Ошибка проверки дубликата: {e}")
             return {'is_duplicate': False}
 
+    async def _build_hash_cache(self) -> Dict[str, Dict]:
+        """Создание кеша хешей всех изображений в S3 для быстрой проверки дубликатов"""
+        hash_cache = {}
+        try:
+            paginator = self.s3.get_paginator('list_objects_v2')
+            
+            for page in paginator.paginate(Bucket=self.bucket):
+                for obj in page.get('Contents', []):
+                    if not obj['Key'].lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff')):
+                        continue
+                        
+                    try:
+                        # Получаем метаданные объекта
+                        response = self.s3.head_object(Bucket=self.bucket, Key=obj['Key'])
+                        metadata = response.get('Metadata', {})
+                        image_hash = metadata.get('image-hash')
+                        
+                        if image_hash:
+                            hash_cache[image_hash] = {
+                                'key': obj['Key'],
+                                'url': self._build_object_url(obj['Key']),
+                                'size': obj['Size'],
+                                'last_modified': obj['LastModified'].isoformat()
+                            }
+                    except Exception:
+                        continue
+                        
+            print(f"Создан кеш хешей для {len(hash_cache)} изображений")
+            return hash_cache
+            
+        except Exception as e:
+            print(f"Ошибка создания кеша хешей: {e}")
+            return {}
+
     async def upload_image_to_path(self, image_data: bytes, file_path: str, check_duplicate: bool = True) -> Dict:
         """Загрузка изображения по указанному пути с проверкой дубликатов"""
         key = file_path.lstrip('/')
@@ -283,11 +327,18 @@ class S3Service:
         }
 
     async def upload_zip_to_folder(self, zip_content: bytes, folder_path: str) -> Dict:
-        """Загрузка и распаковка ZIP в указанную папку с сохранением структуры (параллельная обработка)"""
+        """Оптимизированная загрузка ZIP: локальная распаковка → S3 батчи"""
         import asyncio
+        import time
+        import tempfile
+        import os
+        import shutil
+        from concurrent.futures import ThreadPoolExecutor
         
         uploaded = []
         failed = []
+        start_time = time.time()
+        temp_dir = None
 
         try:
             # Валидация размера архива (макс 2GB)
@@ -295,11 +346,20 @@ class S3Service:
                 return {"uploaded": [], "failed": [{"filename": "archive", "error": "Архив слишком большой (максимум 2GB)"}]}
 
             base_prefix = folder_path.strip('/') + '/' if folder_path != '/' else ''
-
+            
+            print(f"📦 Начинаем оптимизированную обработку ZIP архива размером {len(zip_content) / (1024*1024):.1f} MB")
+            
+            # Этап 1: Создаем временную папку и распаковываем архив
+            print("�️  Создаем временную папку для распаковки...")
+            temp_dir = tempfile.mkdtemp(prefix='zip_upload_')
+            
+            print("📂 Распаковываем архив локально...")
+            extract_start = time.time()
+            
             with zipfile.ZipFile(io.BytesIO(zip_content), 'r') as zip_ref:
-                files_to_process = []
+                # Фильтруем и извлекаем только изображения
+                image_files = []
                 
-                # Сначала собираем все файлы для обработки
                 for file_info in zip_ref.infolist():
                     name = file_info.filename
                     # Нормализуем путь и предотвращаем zip slip
@@ -308,7 +368,7 @@ class S3Service:
                         failed.append({"filename": name, "error": "Invalid path in zip"})
                         continue
 
-                    # Пропускаем каталоги (S3 папки создаются неявно ключами)
+                    # Пропускаем каталоги
                     if name.endswith('/'):
                         continue
                     
@@ -318,106 +378,222 @@ class S3Service:
                         continue
 
                     try:
-                        file_content = zip_ref.read(file_info)
-                        files_to_process.append((norm, file_content))
+                        # Извлекаем файл в временную папку
+                        safe_path = os.path.join(temp_dir, os.path.basename(norm))
+                        with open(safe_path, 'wb') as f:
+                            f.write(zip_ref.read(file_info))
+                        
+                        image_files.append({
+                            'original_name': norm,
+                            'local_path': safe_path,
+                            's3_key': f"{base_prefix}{norm}"
+                        })
                     except Exception as e:
-                        failed.append({"filename": name, "error": f"Ошибка чтения файла: {str(e)}"})
+                        failed.append({"filename": name, "error": f"Ошибка извлечения: {e}"})
 
-                # Ограничиваем количество файлов
-                if len(files_to_process) > 10000:
-                    return {"uploaded": [], "failed": [{"filename": "archive", "error": f"Слишком много файлов в архиве (максимум 10000, найдено {len(files_to_process)})"}]}
+            extract_time = time.time() - extract_start
+            total_files = len(image_files)
+            print(f"✅ Распаковано {total_files} файлов за {extract_time:.2f}с")
+            
+            # Проверяем лимит файлов
+            if total_files > 10000:
+                return {"uploaded": [], "failed": [{"filename": "archive", "error": f"Слишком много файлов в архиве (максимум 10000, найдено {total_files})"}]}
 
-                # Семафор для ограничения параллельных операций (максимум 20 одновременных загрузок)
-                semaphore = asyncio.Semaphore(20)
+            if total_files == 0:
+                return {"uploaded": [], "failed": [], "message": "В архиве не найдено изображений для загрузки"}
+
+            # Этап 2: Получаем список существующих файлов в целевой папке S3
+            print(f"🔍 Получаем список существующих файлов в S3 папке '{folder_path}'...")
+            s3_list_start = time.time()
+            
+            existing_files = {}
+            try:
+                response = self.s3.list_objects_v2(
+                    Bucket=self.bucket,
+                    Prefix=base_prefix,
+                    MaxKeys=10000
+                )
                 
-                async def upload_single_file(norm_path: str, file_content: bytes):
-                    """Загрузка одного файла с семафором"""
-                    async with semaphore:
-                        try:
-                            key = f"{base_prefix}{norm_path}"
-                            
-                            # Проверяем на дубликаты
-                            duplicate_check = await self.check_duplicate_image(file_content)
-                            replaced_duplicate = False
-                            replaced_file = None
-                            
-                            if duplicate_check['is_duplicate']:
-                                # Удаляем старый дубликат
-                                existing = duplicate_check['existing_file']
-                                await self.delete_image_by_key(existing['key'])
-                                replaced_duplicate = True
-                                replaced_file = existing
-                            
-                            # Вычисляем хеш для метаданных
-                            image_hash = hashlib.md5(file_content).hexdigest()
-                            content_type = self._get_content_type(norm_path)
-
-                            # Используем asyncio для неблокирующего выполнения
-                            loop = asyncio.get_event_loop()
-                            await loop.run_in_executor(
-                                None,
-                                lambda: self.s3.put_object(
-                                    Bucket=self.bucket,
-                                    Key=key,
-                                    Body=file_content,
-                                    ContentType=content_type,
-                                    Metadata={'image-hash': image_hash}
-                                )
-                            )
-                            
-                            url = self._build_object_url(key)
-                            return {
-                                "filename": norm_path, 
-                                "url": url, 
-                                "size": len(file_content), 
-                                "status": "success",
-                                "replaced_duplicate": replaced_duplicate,
-                                "replaced_file": replaced_file
+                if 'Contents' in response:
+                    for obj in response['Contents']:
+                        key = obj['Key']
+                        filename = key.replace(base_prefix, '')
+                        if filename:  # Пропускаем папки
+                            existing_files[filename] = {
+                                'key': key,
+                                'size': obj['Size'],
+                                'last_modified': obj['LastModified'].isoformat()
                             }
-                        except Exception as e:
-                            return {"filename": norm_path, "error": str(e), "status": "failed"}
+                            
+            except Exception as e:
+                print(f"⚠️ Ошибка получения списка S3 файлов: {e}")
+            
+            s3_list_time = time.time() - s3_list_start
+            print(f"✅ Найдено {len(existing_files)} существующих файлов в S3 за {s3_list_time:.2f}с")
 
-                # Создаем задачи для параллельной обработки
-                tasks = [
-                    upload_single_file(norm_path, file_content) 
-                    for norm_path, file_content in files_to_process
-                ]
-
-                # Выполняем все задачи параллельно
-                results = await asyncio.gather(*tasks, return_exceptions=True)
-
-                # Обрабатываем результаты
-                replaced_count = 0
-                for result in results:
-                    if isinstance(result, Exception):
-                        failed.append({"filename": "unknown", "error": str(result)})
-                    elif result.get("status") == "success":
-                        uploaded.append({
-                            "filename": result["filename"],
-                            "url": result["url"],
-                            "size": result["size"]
-                        })
-                        if result.get("replaced_duplicate"):
-                            replaced_count += 1
+            # Этап 3: Сравниваем и определяем что загружать
+            print("📊 Анализируем какие файлы нужно загрузить/заменить...")
+            
+            files_to_upload = []  # Новые файлы
+            files_to_replace = []  # Файлы для замены
+            replaced_count = 0
+            
+            for file_info in image_files:
+                filename = os.path.basename(file_info['original_name'])
+                
+                if filename in existing_files:
+                    # Сравниваем размеры файлов для определения изменений
+                    local_size = os.path.getsize(file_info['local_path'])
+                    s3_size = existing_files[filename]['size']
+                    
+                    if local_size != s3_size:
+                        files_to_replace.append(file_info)
+                        replaced_count += 1
+                        print(f"🔄 Заменим {filename} (размер изменился: {s3_size} → {local_size})")
                     else:
-                        failed.append({
-                            "filename": result["filename"],
-                            "error": result["error"]
-                        })
+                        print(f"⏭️  Пропускаем {filename} (уже существует)")
+                else:
+                    files_to_upload.append(file_info)
+            
+            all_upload_files = files_to_upload + files_to_replace
+            upload_count = len(all_upload_files)
+            
+            print(f"📈 К загрузке: {len(files_to_upload)} новых + {len(files_to_replace)} замен = {upload_count} файлов")
+            
+            if upload_count == 0:
+                return {
+                    "uploaded": [],
+                    "failed": failed,
+                    "message": "Все файлы уже существуют в S3, загрузка не требуется",
+                    "replaced_duplicates": 0,
+                    "total_processed": total_files,
+                    "processing_time": round(time.time() - start_time, 1)
+                }
 
+            # Этап 4: Параллельная загрузка в S3 с отчетом о прогрессе
+            print(f"🚀 Начинаем параллельную загрузку {upload_count} файлов в S3...")
+            
+            uploaded_count = 0
+            failed_count = 0
+            last_progress_report = 0
+            
+            # Увеличиваем параллелизм для лучшей скорости
+            semaphore = asyncio.Semaphore(75)  # Увеличено с 50 до 75
+            
+            async def upload_single_file(file_info):
+                nonlocal uploaded_count, failed_count, last_progress_report
+                
+                async with semaphore:
+                    try:
+                        # Читаем файл с диска
+                        with open(file_info['local_path'], 'rb') as f:
+                            file_content = f.read()
+                        
+                        content_type = self._get_content_type(file_info['original_name'])
+                        image_hash = hashlib.md5(file_content).hexdigest()
+                        
+                        # Асинхронная загрузка в S3
+                        loop = asyncio.get_event_loop()
+                        await loop.run_in_executor(
+                            None,
+                            lambda: self.s3.put_object(
+                                Bucket=self.bucket,
+                                Key=file_info['s3_key'],
+                                Body=file_content,
+                                ContentType=content_type,
+                                Metadata={'image-hash': image_hash}
+                            )
+                        )
+                        
+                        # Обновляем счетчики
+                        uploaded_count += 1
+                        
+                        # Прогресс каждые 5% или каждые 50 файлов
+                        progress_percent = (uploaded_count + failed_count) / upload_count * 100
+                        if progress_percent - last_progress_report >= 5 or (uploaded_count + failed_count) % 50 == 0:
+                            elapsed = time.time() - start_time
+                            rate = (uploaded_count + failed_count) / elapsed if elapsed > 0 else 0
+                            eta = (upload_count - uploaded_count - failed_count) / rate if rate > 0 else 0
+                            print(f"📈 Прогресс: {uploaded_count + failed_count}/{upload_count} ({progress_percent:.1f}%) | "
+                                  f"Скорость: {rate:.1f} файлов/сек | ETA: {eta:.0f}сек")
+                            last_progress_report = progress_percent
+                        
+                        url = self._build_object_url(file_info['s3_key'])
+                        return {
+                            "filename": file_info['original_name'],
+                            "url": url,
+                            "size": len(file_content),
+                            "status": "success"
+                        }
+                        
+                    except Exception as e:
+                        failed_count += 1
+                        print(f"❌ Ошибка загрузки {file_info['original_name']}: {e}")
+                        return {
+                            "filename": file_info['original_name'],
+                            "error": str(e),
+                            "status": "failed"
+                        }
+
+            # Создаем и выполняем задачи параллельно
+            tasks = [upload_single_file(file_info) for file_info in all_upload_files]
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+
+            # Обрабатываем результаты
+            for result in results:
+                if isinstance(result, Exception):
+                    failed.append({"filename": "unknown", "error": str(result)})
+                elif result.get("status") == "success":
+                    uploaded.append({
+                        "filename": result["filename"],
+                        "url": result["url"],
+                        "size": result["size"]
+                    })
+                else:
+                    failed.append({
+                        "filename": result["filename"],
+                        "error": result["error"]
+                    })
+
+            # Финальная статистика
+            total_time = time.time() - start_time
+            success_count = len(uploaded)
+            failed_count = len(failed)
+            
+            print(f"🎉 Загрузка завершена!")
+            print(f"📊 Итоговая статистика:")
+            print(f"   ✅ Успешно загружено: {success_count}")
+            print(f"   🔄 Дубликатов заменено: {replaced_count}")
+            print(f"   ❌ Ошибок: {failed_count}")
+            print(f"   ⏱️  Общее время: {total_time:.1f}с")
+            print(f"   🚀 Средняя скорость: {total_files / total_time:.1f} файлов/сек")
+            
+            message = f"Загружено {success_count} из {total_files} файлов за {total_time:.1f}с"
+            if replaced_count > 0:
+                message += f" ({replaced_count} дубликатов заменено)"
+
+            return {
+                "uploaded": uploaded,
+                "failed": failed,
+                "message": message,
+                "replaced_duplicates": replaced_count,
+                "total_processed": total_files,
+                "processing_time": round(total_time, 1)
+            }
+
+        except zipfile.BadZipFile:
+            return {"uploaded": [], "failed": [{"filename": "archive", "error": "Поврежденный ZIP архив"}]}
         except Exception as e:
-            return {"uploaded": [], "failed": [{"filename": "archive", "error": f"Ошибка распаковки: {e}"}]}
-
-        message = f"Загружено {len(uploaded)} из {len(uploaded) + len(failed)} файлов"
-        if replaced_count > 0:
-            message += f" ({replaced_count} дубликатов заменено)"
-
-        return {
-            "uploaded": uploaded, 
-            "failed": failed,
-            "message": message,
-            "replaced_duplicates": replaced_count
-        }
+            print(f"❌ Критическая ошибка при обработке ZIP: {e}")
+            return {"uploaded": [], "failed": [{"filename": "archive", "error": f"Ошибка обработки архива: {e}"}]}
+        finally:
+            # Очищаем временную папку
+            if temp_dir and os.path.exists(temp_dir):
+                try:
+                    shutil.rmtree(temp_dir)
+                    print(f"🧹 Временная папка {temp_dir} очищена")
+                except Exception as e:
+                    print(f"⚠️ Не удалось очистить временную папку: {e}")
 
     async def delete_image_by_key(self, key: str):
         """Удаление изображения по ключу S3"""

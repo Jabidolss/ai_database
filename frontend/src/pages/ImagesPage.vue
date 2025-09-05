@@ -534,26 +534,104 @@
       </div>
       
       <!-- Прогресс загрузки -->
-      <div v-if="uploading" class="flex flex-column gap-2">
+      <div v-if="uploading" class="flex flex-column gap-3">
+        <!-- Фазы загрузки -->
         <div class="flex align-items-center justify-content-between">
-          <span class="text-sm font-medium">Загрузка и обработка архива...</span>
+          <span class="text-sm font-medium">{{ uploadStatus }}</span>
           <span v-if="uploadProgress.total > 0" class="text-sm text-600">
             {{ uploadProgress.processed }} из {{ uploadProgress.total }} файлов
           </span>
         </div>
         
+        <!-- Основной прогресс-бар -->
         <ProgressBar 
-          :value="uploadProgress.total > 0 ? (uploadProgress.processed / uploadProgress.total) * 100 : null"
-          :showValue="false"
-          class="h-1rem"
+          :value="uploadProgress.total > 0 ? Math.round((uploadProgress.processed / uploadProgress.total) * 100) : null"
+          :showValue="true"
+          class="h-2rem"
+          :pt="{
+            value: { class: 'flex align-items-center justify-content-center' },
+            label: { class: 'text-white text-sm font-medium' }
+          }"
         />
         
-        <div class="text-xs text-600">
-          <div v-if="uploadProgress.uploaded > 0" class="text-green-600">
-            ✓ Загружено: {{ uploadProgress.uploaded }}
+        <!-- Детальная информация по фазам -->
+        <div class="grid text-xs">
+          <div class="col-12">
+            <div class="flex align-items-center justify-content-between mb-2">
+              <span class="font-medium text-700">Этапы обработки:</span>
+              <span v-if="uploadStats.speed > 0" class="text-primary">
+                {{ uploadStats.speed }} файлов/сек
+              </span>
+            </div>
           </div>
-          <div v-if="uploadProgress.failed > 0" class="text-red-600">
-            ✗ Ошибок: {{ uploadProgress.failed }}
+          
+          <!-- Этап 1: Распаковка -->
+          <div class="col-6">
+            <div class="flex align-items-center gap-2 p-2 border-round bg-green-50 border-green-200 border-1">
+              <i class="pi pi-file-export text-green-600"></i>
+              <div>
+                <div class="font-medium text-green-800">Распаковка</div>
+                <div class="text-green-600 text-xs">
+                  {{ uploadPhases.extract.completed ? '✓ Завершено' : (uploadPhases.extract.active ? '⏳ Выполняется' : '⌛ Ожидание') }}
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Этап 2: Анализ S3 -->
+          <div class="col-6">
+            <div class="flex align-items-center gap-2 p-2 border-round bg-blue-50 border-blue-200 border-1">
+              <i class="pi pi-search text-blue-600"></i>
+              <div>
+                <div class="font-medium text-blue-800">Анализ S3</div>
+                <div class="text-blue-600 text-xs">
+                  {{ uploadPhases.analyze.completed ? '✓ Завершено' : (uploadPhases.analyze.active ? '⏳ Выполняется' : '⌛ Ожидание') }}
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Этап 3: Загрузка -->
+          <div class="col-12 mt-2">
+            <div class="flex align-items-center gap-2 p-2 border-round bg-orange-50 border-orange-200 border-1">
+              <i class="pi pi-cloud-upload text-orange-600"></i>
+              <div class="flex-1">
+                <div class="font-medium text-orange-800">Загрузка в S3</div>
+                <div class="text-orange-600 text-xs">
+                  {{ uploadPhases.upload.completed ? '✓ Завершено' : (uploadPhases.upload.active ? '⏳ Выполняется' : '⌛ Ожидание') }}
+                </div>
+              </div>
+              <div v-if="uploadPhases.upload.active && uploadStats.eta > 0" class="text-right">
+                <div class="text-xs text-600">Осталось:</div>
+                <div class="text-sm font-medium">{{ formatTime(uploadStats.eta) }}</div>
+              </div>
+            </div>
+          </div>
+        </div>
+        
+        <!-- Статистика -->
+        <div class="grid text-xs mt-2">
+          <div class="col-4 text-center">
+            <div class="text-green-600 font-semibold text-lg">{{ uploadProgress.uploaded }}</div>
+            <div class="text-500">Загружено</div>
+          </div>
+          <div class="col-4 text-center" v-if="uploadProgress.replaced > 0">
+            <div class="text-orange-600 font-semibold text-lg">{{ uploadProgress.replaced }}</div>
+            <div class="text-500">Заменено</div>
+          </div>
+          <div class="col-4 text-center" v-if="uploadProgress.failed > 0">
+            <div class="text-red-600 font-semibold text-lg">{{ uploadProgress.failed }}</div>
+            <div class="text-500">Ошибок</div>
+          </div>
+        </div>
+        
+        <!-- Список ошибок (если есть) -->
+        <div v-if="uploadProgress.errors.length > 0" class="mt-2">
+          <div class="text-xs text-600 mb-1">Последние ошибки:</div>
+          <div class="max-h-6rem overflow-auto">
+            <div class="text-xs text-red-600 mb-1" v-for="error in uploadProgress.errors.slice(0, 5)" :key="error.filename">
+              • {{ error.filename }}: {{ error.error }}
+            </div>
           </div>
         </div>
       </div>
@@ -707,6 +785,14 @@ const isDragging = ref(false)
 const dragOverFolderId = ref(null)
 const gridContainer = ref(null)
 
+// Автопрокрутка при выделении прямоугольником
+const autoScrollState = ref({
+  active: false,
+  frameId: null,
+  velocityY: 0,
+  lastMouseClientY: 0
+})
+
 // Диалоги
 const showCreateFolderDialog = ref(false)
 const showUploadDialog = ref(false)
@@ -732,8 +818,21 @@ const uploadProgress = ref({
   total: 0,
   processed: 0,
   uploaded: 0,
-  failed: 0
+  failed: 0,
+  replaced: 0,
+  errors: []
 })
+const uploadStats = ref({
+  startTime: null,
+  speed: 0,
+  eta: 0
+})
+const uploadPhases = ref({
+  extract: { active: false, completed: false },
+  analyze: { active: false, completed: false },
+  upload: { active: false, completed: false }
+})
+const uploadStatus = ref('Загрузка и обработка архива...')
 const canCancelUpload = ref(false)
 
 // Контекстное меню
@@ -1066,34 +1165,65 @@ const updateSelectionRectangle = (event) => {
   
   selectionRectangle.value.currentX = event.clientX - rect.left + scrollLeft
   selectionRectangle.value.currentY = event.clientY - rect.top + scrollTop
-  
-  // Проверяем пересечения с элементами
+
+  // Обновляем пересечения
+  updateSelectionIntersections()
+
+  // Запоминаем позицию мыши для автоскролла
+  autoScrollState.value.lastMouseClientY = event.clientY
+
+  // Настраиваем автопрокрутку, если курсор у края контейнера
+  const edge = 40 // px
+  let velocityY = 0
+  if (event.clientY > rect.bottom - edge) {
+    const intensity = Math.min(1, (event.clientY - (rect.bottom - edge)) / edge)
+    velocityY = 8 + 24 * intensity // 8..32 px/кадр
+  } else if (event.clientY < rect.top + edge) {
+    const intensity = Math.min(1, ((rect.top + edge) - event.clientY) / edge)
+    velocityY = -(8 + 24 * intensity)
+  }
+
+  if (velocityY !== 0) {
+    startAutoScroll(velocityY)
+  } else {
+    stopAutoScroll()
+  }
+}
+
+const endSelectionRectangle = () => {
+  selectionRectangle.value.active = false
+  document.removeEventListener('mousemove', updateSelectionRectangle)
+  document.removeEventListener('mouseup', endSelectionRectangle)
+  stopAutoScroll()
+}
+
+// Выделено в функцию: обновление пересечений прямоугольника и элементов
+const updateSelectionIntersections = () => {
+  const container = gridContainer.value
+  if (!container || !selectionRectangle.value.active) return
+  const rect = container.getBoundingClientRect()
+
   const rectLeft = Math.min(selectionRectangle.value.startX, selectionRectangle.value.currentX)
   const rectTop = Math.min(selectionRectangle.value.startY, selectionRectangle.value.currentY)
   const rectRight = Math.max(selectionRectangle.value.startX, selectionRectangle.value.currentX)
   const rectBottom = Math.max(selectionRectangle.value.startY, selectionRectangle.value.currentY)
-  
-  // Проверяем каждый элемент
+
   Object.keys(itemRefs.value).forEach(key => {
     const element = itemRefs.value[key]
     if (!element) return
-    
-  const elementRect = element.getBoundingClientRect()
-  const elementLeft = elementRect.left - rect.left
-  const elementTop = elementRect.top - rect.top
-  const elementRight = elementRect.right - rect.left
-  const elementBottom = elementRect.bottom - rect.top
-    
-    // Проверяем пересечение
+
+    const elementRect = element.getBoundingClientRect()
+    const elementLeft = elementRect.left - rect.left
+    const elementTop = elementRect.top - rect.top
+    const elementRight = elementRect.right - rect.left
+    const elementBottom = elementRect.bottom - rect.top
+
     if (rectLeft < elementRight && rectRight > elementLeft &&
         rectTop < elementBottom && rectBottom > elementTop) {
-      
-      // Находим соответствующий элемент данных
       const [type, id] = key.split('-')
-      const item = type === 'folder' 
+      const item = type === 'folder'
         ? folders.value.find(f => f.id === id)
         : images.value.find(i => i.id === id)
-      
       if (item && !isSelected(item, type)) {
         selectedItems.value.push({ ...item, type })
       }
@@ -1101,10 +1231,48 @@ const updateSelectionRectangle = (event) => {
   })
 }
 
-const endSelectionRectangle = () => {
-  selectionRectangle.value.active = false
-  document.removeEventListener('mousemove', updateSelectionRectangle)
-  document.removeEventListener('mouseup', endSelectionRectangle)
+const startAutoScroll = (velocityY) => {
+  const state = autoScrollState.value
+  state.velocityY = velocityY
+  if (state.active) return
+  state.active = true
+  const step = () => {
+    if (!state.active) return
+    const container = gridContainer.value
+    if (!container || !selectionRectangle.value.active) {
+      stopAutoScroll()
+      return
+    }
+    const prev = container.scrollTop
+    // Выполняем прокрутку
+    container.scrollTop = Math.max(0, Math.min(container.scrollHeight - container.clientHeight, container.scrollTop + state.velocityY))
+
+    // Обновляем координаты selection с учётом прокрутки контейнера и последней позиции мыши
+    const rect = container.getBoundingClientRect()
+    const scrollTop = container.scrollTop || 0
+    const scrollLeft = container.scrollLeft || 0
+    selectionRectangle.value.currentY = state.lastMouseClientY - rect.top + scrollTop
+    // X остаётся по последнему mousemove
+    // Обновляем пересечения
+    updateSelectionIntersections()
+
+    // Если прокрутка дальше невозможна и скорость ведёт в тупик — остановим
+    if (container.scrollTop === prev && (state.velocityY > 0 || state.velocityY < 0)) {
+      // Но если курсор всё ещё у края, просто не двигаем, продолжим слушать mousemove
+    }
+
+    state.frameId = requestAnimationFrame(step)
+  }
+  state.frameId = requestAnimationFrame(step)
+}
+
+const stopAutoScroll = () => {
+  const state = autoScrollState.value
+  state.active = false
+  if (state.frameId) {
+    cancelAnimationFrame(state.frameId)
+    state.frameId = null
+  }
 }
 
 // Методы drag & drop
@@ -1340,8 +1508,21 @@ const onZipSelect = (event) => {
     total: 0,
     processed: 0,
     uploaded: 0,
-    failed: 0
+    failed: 0,
+    replaced: 0,
+    errors: []
   }
+  uploadStats.value = {
+    startTime: null,
+    speed: 0,
+    eta: 0
+  }
+  uploadPhases.value = {
+    extract: { active: false, completed: false },
+    analyze: { active: false, completed: false },
+    upload: { active: false, completed: false }
+  }
+  uploadStatus.value = 'Готов к загрузке'
 }
 
 const uploadZip = async () => {
@@ -1349,26 +1530,62 @@ const uploadZip = async () => {
   
   uploading.value = true
   canCancelUpload.value = false
+  uploadStats.value.startTime = Date.now()
   
-  // Сброс прогресса
+  // Сброс прогресса и фаз
   uploadProgress.value = {
     total: 0,
     processed: 0,
     uploaded: 0,
-    failed: 0
+    failed: 0,
+    replaced: 0,
+    errors: []
   }
   
+  uploadPhases.value = {
+    extract: { active: false, completed: false },
+    analyze: { active: false, completed: false },
+    upload: { active: false, completed: false }
+  }
+  
+  // Фазы загрузки для пользователя
+  uploadStatus.value = 'Подготовка архива к отправке...'
+  
   try {
-  const target = zipFolderPath.value || currentPath.value
-  const result = await apiService.uploadZipToFolder(target, selectedZipFile.value)
+    const target = zipFolderPath.value || currentPath.value
+    
+    // Показываем прогресс отправки
+    uploadStatus.value = 'Отправка архива на сервер...'
+    uploadPhases.value.extract.active = true
+    
+    const result = await apiService.uploadZipToFolder(target, selectedZipFile.value)
+    
+    // Все фазы завершены
+    uploadPhases.value.extract.completed = true
+    uploadPhases.value.extract.active = false
+    uploadPhases.value.analyze.completed = true
+    uploadPhases.value.analyze.active = false
+    uploadPhases.value.upload.completed = true
+    uploadPhases.value.upload.active = false
+    
+    uploadStatus.value = 'Обработка завершена!'
     
     // Обновляем прогресс на основе результата
-    uploadProgress.value.total = result.uploaded.length + result.failed.length
-    uploadProgress.value.processed = result.uploaded.length + result.failed.length
+    const totalFiles = result.total_processed || (result.uploaded.length + result.failed.length)
+    
+    uploadProgress.value.total = totalFiles
+    uploadProgress.value.processed = totalFiles
     uploadProgress.value.uploaded = result.uploaded.length
     uploadProgress.value.failed = result.failed.length
+    uploadProgress.value.replaced = result.replaced_duplicates || 0
+    uploadProgress.value.errors = result.failed || []
     
-    const successMsg = result.message || `Загружено ${result.uploaded.length} из ${result.uploaded.length + result.failed.length} файлов`
+    // Рассчитываем статистику
+    const elapsed = (Date.now() - uploadStats.value.startTime) / 1000
+    uploadStats.value.speed = elapsed > 0 ? Math.round(totalFiles / elapsed) : 0
+    uploadStats.value.eta = 0
+    
+    const successMsg = result.message || `Загружено ${result.uploaded.length} из ${totalFiles} файлов`
     
     toast.add({
       severity: result.failed.length === 0 ? 'success' : 'warn',
@@ -1381,12 +1598,28 @@ const uploadZip = async () => {
       console.warn('Не удалось загрузить файлы:', result.failed)
     }
     
-    selectedZipFile.value = null
-    showZipUploadDialog.value = false
+    // Автоматически закрываем диалог через 3 секунды если всё успешно
+    if (result.failed.length === 0) {
+      setTimeout(() => {
+        if (!uploading.value) return // Проверяем что диалог еще не закрыт
+        showZipUploadDialog.value = false
+        selectedZipFile.value = null
+      }, 3000)
+    }
+    
     loadData()
   } catch (error) {
     console.error('Ошибка загрузки ZIP:', error)
     const errorMsg = error.response?.data?.detail || error.message || 'Не удалось загрузить ZIP архив'
+    
+    uploadStatus.value = 'Ошибка загрузки'
+    uploadProgress.value.errors = [{ filename: 'archive', error: errorMsg }]
+    
+    // Отмечаем все фазы как провалившиеся
+    uploadPhases.value.extract.active = false
+    uploadPhases.value.analyze.active = false  
+    uploadPhases.value.upload.active = false
+    
     toast.add({
       severity: 'error',
       summary: 'Ошибка',
@@ -1407,9 +1640,23 @@ const cancelZipUpload = () => {
       total: 0,
       processed: 0,
       uploaded: 0,
-      failed: 0
+      failed: 0,
+      replaced: 0,
+      errors: []
     }
+    uploadStats.value = {
+      startTime: null,
+      speed: 0,
+      eta: 0
+    }
+    uploadStatus.value = 'Готов к загрузке'
   }
+}
+
+const formatTime = (seconds) => {
+  if (seconds < 60) return `${Math.round(seconds)}с`
+  if (seconds < 3600) return `${Math.round(seconds / 60)}мин`
+  return `${Math.round(seconds / 3600)}ч`
 }
 
 const formatFileSize = (bytes) => {
@@ -1844,6 +2091,10 @@ const selectAll = () => {
   position: relative;
   width: 100%;
   min-height: 400px;
+  /* Делаем контейнер прокручиваемым с видимым скроллбаром */
+  max-height: calc(100vh - 320px); /* учитываем верхние панели/карточки */
+  overflow: auto;
+  overscroll-behavior: contain;
 }
 
 .loading-overlay {
@@ -1851,5 +2102,23 @@ const selectAll = () => {
   inset: 0;
   background: rgba(255, 255, 255, 0.7);
   z-index: 1100;
+}
+
+/* Кастомизация скроллбара */
+.grid-container::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+.grid-container::-webkit-scrollbar-track {
+  background: var(--surface-100);
+}
+.grid-container::-webkit-scrollbar-thumb {
+  background-color: var(--surface-400);
+  border-radius: 6px;
+  border: 2px solid var(--surface-100);
+}
+.grid-container {
+  scrollbar-width: thin; /* Firefox */
+  scrollbar-color: var(--surface-400) var(--surface-100);
 }
 </style>
