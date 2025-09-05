@@ -197,22 +197,37 @@ async def bulk_delete_items(
 ):
     """Множественное удаление изображений и папок"""
     try:
-        deleted_count = 0
+        # Разделяем входные пути на папки и файлы изображений
+        folder_paths: list[str] = []
+        image_paths: list[str] = []
+        for p in delete_data.paths:
+            if p.endswith('/') or not any(p.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']):
+                folder_paths.append(p)
+            else:
+                image_paths.append(p)
+
         failed_items = []
-        
-        for path in delete_data.paths:
+        deleted_count = 0
+
+        # Папки удаляем последовательно; внутри используется батчевое удаление содержимого
+        for folder in folder_paths:
             try:
-                # Проверяем, это папка или файл по структуре пути
-                if path.endswith('/') or not any(path.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']):
-                    # Это папка
-                    await s3_service.delete_folder(path)
-                else:
-                    # Это изображение
-                    await s3_service.delete_image_by_path(path)
+                await s3_service.delete_folder(folder)
                 deleted_count += 1
             except Exception as e:
-                failed_items.append({"path": path, "error": str(e)})
-        
+                failed_items.append({"path": folder, "error": str(e)})
+
+        # Файлы удаляем батчами через S3 DeleteObjects
+        if image_paths:
+            try:
+                result = await s3_service.delete_images_batch(image_paths)
+                deleted_count += result.get('deleted', 0)
+                for k in result.get('errors', []) or []:
+                    failed_items.append({"path": '/' + k if not k.startswith('/') else k, "error": "delete failed"})
+            except Exception as e:
+                for p in image_paths:
+                    failed_items.append({"path": p, "error": str(e)})
+
         return {
             "message": f"Удалено {deleted_count} из {len(delete_data.paths)} элементов",
             "deleted": deleted_count,
@@ -229,26 +244,39 @@ async def move_items(
 ):
     """Перемещение элементов в другую папку"""
     try:
-        moved_count = 0
+        folders: list[str] = []
+        images: list[str] = []
+        for src in move_data.sourcePaths:
+            if src.endswith('/') or not any(src.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']):
+                folders.append(src)
+            else:
+                images.append(src)
+
         failed_items = []
-        
-        for source_path in move_data.sourcePaths:
+        moved_count = 0
+
+        # Папки перемещаем последовательно
+        for src in folders:
             try:
-                # Определяем имя элемента
-                item_name = source_path.split('/')[-1]
-                target_full_path = f"{move_data.targetPath.rstrip('/')}/{item_name}"
-                
-                # Проверяем, это папка или файл
-                if source_path.endswith('/') or not any(source_path.lower().endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff']):
-                    # Это папка - перемещаем через переименование
-                    await s3_service.move_folder(source_path, target_full_path)
-                else:
-                    # Это изображение
-                    await s3_service.move_image(source_path, target_full_path)
+                item_name = src.rstrip('/').split('/')[-1]
+                dst = f"{move_data.targetPath.rstrip('/')}/{item_name}"
+                await s3_service.move_folder(src, dst)
                 moved_count += 1
             except Exception as e:
-                failed_items.append({"path": source_path, "error": str(e)})
-        
+                failed_items.append({"path": src, "error": str(e)})
+
+        # Файлы — конкурентно
+        if images:
+            pairs = []
+            for src in images:
+                item_name = src.split('/')[-1]
+                dst = f"{move_data.targetPath.rstrip('/')}/{item_name}"
+                pairs.append((src, dst))
+            result = await s3_service.move_images_concurrent(pairs)
+            moved_count += result.get('moved', 0)
+            for err in result.get('errors', []):
+                failed_items.append({"path": err.get('src'), "error": err.get('error')})
+
         return {
             "message": f"Перемещено {moved_count} из {len(move_data.sourcePaths)} элементов",
             "moved": moved_count,

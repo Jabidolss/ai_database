@@ -105,6 +105,13 @@
           <template #content>
             <!-- Режим сетки -->
             <div v-if="viewMode === 'grid'" ref="gridContainer" class="grid-container" @mousedown="startSelectionRectangle">
+              <!-- Оверлей загрузки -->
+              <div v-if="loading" class="loading-overlay flex align-items-center justify-content-center">
+                <div class="text-center">
+                  <ProgressSpinner style="width:40px;height:40px" strokeWidth="6" aria-label="Загрузка" />
+                  <div class="mt-2 text-600">Загружаем содержимое папки…</div>
+                </div>
+              </div>
               <div class="grid">
                 <!-- Кнопка "Назад" -->
                 <div v-if="currentPath !== '/'" class="col-6 md:col-4 lg:col-3 xl:col-2">
@@ -388,6 +395,46 @@
     :style="{ width: '500px' }"
   >
     <div class="flex flex-column gap-3">
+      <!-- Выбор целевой папки для загрузки -->
+      <div class="flex flex-column gap-2">
+        <div class="text-600 text-sm">Папка загрузки</div>
+        <div class="p-2 border-1 surface-border border-round">
+          <div class="flex align-items-center justify-content-between mb-2">
+            <div class="text-sm">
+              <span class="text-600">Текущий путь: </span>
+              <span class="font-medium">{{ uploadFolderPath }}</span>
+            </div>
+            <Button size="small" text icon="pi pi-refresh" @click="reloadUploadPickerFolders" />
+          </div>
+          <Breadcrumb :model="uploadBreadcrumbItems" class="mb-2">
+            <template #item="{ item, props }">
+              <a href="#" @click.prevent="navigateUploadBreadcrumb(item)" v-bind="props.action">
+                <span class="text-primary font-semibold">{{ item.label }}</span>
+              </a>
+            </template>
+          </Breadcrumb>
+          <div class="folder-picker-list">
+            <div 
+              v-if="uploadFolderPath !== '/'" 
+              class="p-2 border-round cursor-pointer hover:bg-primary-50 mb-1"
+              @click="uploadPickerGoUp"
+            >
+              <i class="pi pi-arrow-left mr-2"></i> Вверх
+            </div>
+            <div 
+              v-for="f in uploadPickerFolders" :key="f.id"
+              class="p-2 border-round cursor-pointer hover:bg-primary-50 flex align-items-center gap-2"
+              @click="openUploadPickerFolder(f)"
+            >
+              <i class="pi pi-folder text-orange-500"></i>
+              <span class="text-sm">{{ f.name }}</span>
+              <span class="ml-auto text-xs text-500">{{ f.itemCount }} элементов</span>
+            </div>
+            <div v-if="uploadPickerFolders.length === 0" class="text-600 text-sm">Подпапок нет</div>
+          </div>
+        </div>
+      </div>
+
       <div class="flex align-items-center gap-2 text-sm text-600">
         Проверка и замена дубликатов: всегда включено
       </div>
@@ -431,6 +478,46 @@
     :closeOnEscape="!uploading"
   >
     <div class="flex flex-column gap-3">
+      <!-- Выбор целевой папки для ZIP -->
+      <div class="flex flex-column gap-2">
+        <div class="text-600 text-sm">Папка загрузки</div>
+        <div class="p-2 border-1 surface-border border-round">
+          <div class="flex align-items-center justify-content-between mb-2">
+            <div class="text-sm">
+              <span class="text-600">Текущий путь: </span>
+              <span class="font-medium">{{ zipFolderPath }}</span>
+            </div>
+            <Button size="small" text icon="pi pi-refresh" @click="reloadZipPickerFolders" :disabled="uploading" />
+          </div>
+          <Breadcrumb :model="zipBreadcrumbItems" class="mb-2">
+            <template #item="{ item, props }">
+              <a href="#" @click.prevent="navigateZipBreadcrumb(item)" v-bind="props.action">
+                <span class="text-primary font-semibold">{{ item.label }}</span>
+              </a>
+            </template>
+          </Breadcrumb>
+          <div class="folder-picker-list">
+            <div 
+              v-if="zipFolderPath !== '/'" 
+              class="p-2 border-round cursor-pointer hover:bg-primary-50 mb-1"
+              @click="zipPickerGoUp"
+            >
+              <i class="pi pi-arrow-left mr-2"></i> Вверх
+            </div>
+            <div 
+              v-for="f in zipPickerFolders" :key="f.id"
+              class="p-2 border-round cursor-pointer hover:bg-primary-50 flex align-items-center gap-2"
+              @click="openZipPickerFolder(f)"
+            >
+              <i class="pi pi-folder text-orange-500"></i>
+              <span class="text-sm">{{ f.name }}</span>
+              <span class="ml-auto text-xs text-500">{{ f.itemCount }} элементов</span>
+            </div>
+            <div v-if="zipPickerFolders.length === 0" class="text-600 text-sm">Подпапок нет</div>
+          </div>
+        </div>
+      </div>
+
       <FileUpload
         ref="zipUpload"
         mode="basic"
@@ -588,6 +675,7 @@ import Column from 'primevue/column'
 import ContextMenu from 'primevue/contextmenu'
 import Breadcrumb from 'primevue/breadcrumb'
 import ProgressBar from 'primevue/progressbar'
+import ProgressSpinner from 'primevue/progressspinner'
 // import Checkbox from 'primevue/checkbox'
 import Divider from 'primevue/divider'
 import apiService from '../services/apiService'
@@ -671,6 +759,104 @@ const navigateBreadcrumb = (item) => {
     loadData()
   }
 }
+
+// ---------------- Выбор папки для загрузки (внутри диалогов) ----------------
+import { watch } from 'vue'
+
+// Состояние выбора папки для загрузки изображений
+const uploadFolderPath = ref('/')
+const uploadPickerFolders = ref([])
+const uploadBreadcrumbItems = computed(() => makeBreadcrumbItems(uploadFolderPath.value))
+
+// Состояние выбора папки для загрузки ZIP
+const zipFolderPath = ref('/')
+const zipPickerFolders = ref([])
+const zipBreadcrumbItems = computed(() => makeBreadcrumbItems(zipFolderPath.value))
+
+function makeBreadcrumbItems(path) {
+  const items = [{ label: 'Корневая папка', path: '/' }]
+  if (path !== '/') {
+    const parts = path.split('/').filter(Boolean)
+    parts.forEach((part, idx) => {
+      const p = '/' + parts.slice(0, idx + 1).join('/')
+      items.push({ label: part, path: p })
+    })
+  }
+  return items
+}
+
+function parentPath(path) {
+  const pathParts = path.split('/').filter(Boolean)
+  pathParts.pop()
+  return pathParts.length > 0 ? '/' + pathParts.join('/') : '/'
+}
+
+async function reloadUploadPickerFolders() {
+  try {
+    const res = await apiService.getImagesAndFolders(uploadFolderPath.value)
+    uploadPickerFolders.value = res.folders || []
+  } catch (e) {
+    uploadPickerFolders.value = []
+  }
+}
+
+async function reloadZipPickerFolders() {
+  try {
+    const res = await apiService.getImagesAndFolders(zipFolderPath.value)
+    zipPickerFolders.value = res.folders || []
+  } catch (e) {
+    zipPickerFolders.value = []
+  }
+}
+
+function navigateUploadBreadcrumb(item) {
+  if (item?.path != null) {
+    uploadFolderPath.value = item.path
+    reloadUploadPickerFolders()
+  }
+}
+
+function navigateZipBreadcrumb(item) {
+  if (item?.path != null) {
+    zipFolderPath.value = item.path
+    reloadZipPickerFolders()
+  }
+}
+
+function openUploadPickerFolder(folder) {
+  uploadFolderPath.value = folder.path
+  reloadUploadPickerFolders()
+}
+
+function openZipPickerFolder(folder) {
+  zipFolderPath.value = folder.path
+  reloadZipPickerFolders()
+}
+
+function uploadPickerGoUp() {
+  uploadFolderPath.value = parentPath(uploadFolderPath.value)
+  reloadUploadPickerFolders()
+}
+
+function zipPickerGoUp() {
+  zipFolderPath.value = parentPath(zipFolderPath.value)
+  reloadZipPickerFolders()
+}
+
+// Инициализация выбора при открытии диалогов
+watch(showUploadDialog, (v) => {
+  if (v) {
+    uploadFolderPath.value = currentPath.value
+    reloadUploadPickerFolders()
+  }
+})
+
+watch(showZipUploadDialog, (v) => {
+  if (v) {
+    zipFolderPath.value = currentPath.value
+    reloadZipPickerFolders()
+  }
+})
 
 // Фильтрованные данные
 const filteredFolders = computed(() => {
@@ -1115,7 +1301,8 @@ const uploadImages = async () => {
   
   uploading.value = true
   try {
-  const result = await apiService.uploadImagesToFolder(currentPath.value, selectedImages.value)
+  const target = uploadFolderPath.value || currentPath.value
+  const result = await apiService.uploadImagesToFolder(target, selectedImages.value)
     
     let message = result.message
     if (result.replaced_duplicates > 0) {
@@ -1172,7 +1359,8 @@ const uploadZip = async () => {
   }
   
   try {
-    const result = await apiService.uploadZipToFolder(currentPath.value, selectedZipFile.value)
+  const target = zipFolderPath.value || currentPath.value
+  const result = await apiService.uploadZipToFolder(target, selectedZipFile.value)
     
     // Обновляем прогресс на основе результата
     uploadProgress.value.total = result.uploaded.length + result.failed.length
@@ -1656,5 +1844,12 @@ const selectAll = () => {
   position: relative;
   width: 100%;
   min-height: 400px;
+}
+
+.loading-overlay {
+  position: absolute;
+  inset: 0;
+  background: rgba(255, 255, 255, 0.7);
+  z-index: 1100;
 }
 </style>

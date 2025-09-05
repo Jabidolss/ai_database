@@ -93,6 +93,20 @@ export default {
     return api.post('/chat/generate-report', { query, history })
   },
 
+  // История чата (серверная)
+  getChatHistory(limit = 10) {
+    return api.get('/chat/history', { params: { limit } })
+  },
+
+  addChatMessage(message) {
+    // message: { role: 'user'|'ai', text?: string, sql?: string, error?: string }
+    return api.post('/chat/history', message)
+  },
+
+  clearChatHistory() {
+    return api.delete('/chat/history')
+  },
+
   // Загрузка файлов
   uploadExcel(file) {
     const formData = new FormData()

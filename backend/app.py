@@ -4,6 +4,7 @@ load_dotenv()
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+from sqlalchemy import text
 
 # Импорт моделей для создания таблиц при старте
 from models import engine, Base, get_db
@@ -15,6 +16,12 @@ async def lifespan(app: FastAPI):
     # Создание таблиц при старте
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Простые миграции (idempotent): добавляем колонку results, если ее нет
+        try:
+            await conn.execute(text("ALTER TABLE chat_messages ADD COLUMN IF NOT EXISTS results JSONB"))
+        except Exception:
+            # Логируем по желанию; пропускаем ошибку, чтобы не блокировать старт
+            pass
     
     # Создание пользователей по умолчанию
     async for db in get_db():

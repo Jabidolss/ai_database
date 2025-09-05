@@ -1,6 +1,7 @@
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, sessionmaker
-from sqlalchemy import Text, DateTime, func, String
+from sqlalchemy import Text, DateTime, func, String, Integer, ForeignKey, JSON
+from sqlalchemy.orm import relationship
 from typing import Optional, AsyncGenerator
 from datetime import datetime
 
@@ -51,6 +52,22 @@ class ColumnMappingSetting(Base):
     excel_patterns: Mapped[str] = mapped_column(Text)  # JSON массив паттернов для поиска
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+# Модель сообщений чата
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    role: Mapped[str] = mapped_column(String(10))  # 'user' | 'ai'
+    text: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    sql: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    error: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    results: Mapped[Optional[dict]] = mapped_column(JSON, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), index=True)
+
+    # Опционально: связь с пользователем (необязательно использовать)
+    user: Mapped[Optional["User"]] = relationship("User", backref="chat_messages")
 
 # Настройки для асинхронной работы с БД
 import os

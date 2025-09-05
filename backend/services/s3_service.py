@@ -428,6 +428,37 @@ class S3Service:
         key = image_path.lstrip('/')
         await self.delete_image_by_key(key)
 
+    def _is_image_path(self, path: str) -> bool:
+        """Проверка по расширению, что путь указывает на файл изображения."""
+        p = path.lower()
+        return any(p.endswith(ext) for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff'])
+
+    async def delete_images_batch(self, image_paths: list[str]) -> dict:
+        """
+        Удаление набора изображений батчами через S3 DeleteObjects (до 1000 за раз).
+        Возвращает { deleted: int, errors: [keys...] } где keys — S3-ключи не удалённых объектов.
+        """
+        keys = [p.lstrip('/') for p in image_paths]
+        total_deleted = 0
+        error_keys: list[str] = []
+
+        for i in range(0, len(keys), 1000):
+            chunk = keys[i:i + 1000]
+            try:
+                resp = self.s3.delete_objects(
+                    Bucket=self.bucket,
+                    Delete={'Objects': [{'Key': k} for k in chunk]}
+                )
+                total_deleted += len(resp.get('Deleted', []) or [])
+                for err in resp.get('Errors', []) or []:
+                    if err.get('Key'):
+                        error_keys.append(err['Key'])
+            except Exception:
+                # Если удаление чанка упало, считаем все ключи из него ошибочными
+                error_keys.extend(chunk)
+
+        return {"deleted": total_deleted, "errors": error_keys}
+
     async def rename_image(self, old_path: str, new_name: str) -> str:
         """Переименование изображения"""
         old_key = old_path.lstrip('/')
@@ -480,6 +511,47 @@ class S3Service:
         
         # Удаляем старый объект
         self.s3.delete_object(Bucket=self.bucket, Key=old_key)
+
+    async def move_images_concurrent(self, pairs: list[tuple[str, str]], max_workers: int = 20) -> dict:
+        """
+        Параллельное перемещение набора изображений.
+        pairs: список кортежей (old_path, new_path)
+        Возвращает: { moved: int, errors: [{src, dst, error}] }
+        """
+        import asyncio
+
+        loop = asyncio.get_event_loop()
+        semaphore = asyncio.Semaphore(max_workers)
+
+        async def move_one(src: str, dst: str):
+            async with semaphore:
+                old_key = src.lstrip('/')
+                new_key = dst.lstrip('/')
+                def op():
+                    # copy + delete
+                    self.s3.copy_object(
+                        Bucket=self.bucket,
+                        CopySource={'Bucket': self.bucket, 'Key': old_key},
+                        Key=new_key
+                    )
+                    self.s3.delete_object(Bucket=self.bucket, Key=old_key)
+                await loop.run_in_executor(None, op)
+
+        moved = 0
+        errors: list[dict] = []
+        tasks = []
+        for src, dst in pairs:
+            async def wrapper(s=src, d=dst):
+                nonlocal moved, errors
+                try:
+                    await move_one(s, d)
+                    moved += 1
+                except Exception as e:
+                    errors.append({"src": s, "dst": d, "error": str(e)})
+            tasks.append(wrapper())
+
+        await asyncio.gather(*tasks, return_exceptions=False)
+        return {"moved": moved, "errors": errors}
 
     async def search_images(self, query: str, folder_path: str = "/") -> List[Dict]:
         """Поиск изображений по названию"""

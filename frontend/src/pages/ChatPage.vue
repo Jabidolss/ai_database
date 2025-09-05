@@ -37,7 +37,13 @@
                   </div>
                   
                   <!-- Результаты в виде таблицы -->
-                  <div v-if="message.results && Array.isArray(message.results) && message.results.length > 0" class="results-table-container">
+                  <!-- Единичное значение (например, COUNT) -->
+                  <div v-if="isSingleValue(message.results)" class="text-result">
+                    {{ formatSingleValue(message.results) }}
+                  </div>
+
+                  <!-- Массив результатов в виде таблицы -->
+                  <div v-else-if="message.results && Array.isArray(message.results) && message.results.length > 0" class="results-table-container">
                     <div class="table-scroll-wrapper">
                       <DataTable
                         :value="message.results"
@@ -132,9 +138,17 @@
           />
         </div>
         <div class="input-footer">
-          <small class="text-muted">
-            Нажмите Enter для отправки, Shift+Enter для новой строки
-          </small>
+          <div class="input-footer-row">
+            <small class="text-muted">
+              Нажмите Enter для отправки, Shift+Enter для новой строки
+            </small>
+            <Button
+              label="Очистить историю"
+              text
+              size="small"
+              @click="clearHistory"
+            />
+          </div>
         </div>
       </div>
     </div>
@@ -165,6 +179,71 @@ export default {
     const isLoading = ref(false)
     const messagesContainer = ref(null)
 
+    // Ключ хранения истории чата для текущего пользователя
+    const getStorageKey = () => {
+      try {
+        const userInfo = JSON.parse(localStorage.getItem('user_info') || 'null')
+        const username = userInfo?.username || userInfo?.login || 'guest'
+        return `chat_history_${username}`
+      } catch {
+        return 'chat_history_guest'
+      }
+    }
+
+    // Сохраняем последние 10 сообщений (с небольшим превью результатов)
+    const saveHistory = () => {
+      const MAX_ROWS = 50
+      const MAX_COLS = 50
+      const lightMessages = messages.value.slice(-10).map(m => {
+        const item = {
+          type: m.type,
+          text: m.text || '',
+          sql: m.sql || '',
+          error: m.error || ''
+        }
+        if (Array.isArray(m.results) && m.results.length > 0) {
+          // Сохраняем урезанную копию результатов
+          const sliced = m.results.slice(0, MAX_ROWS).map(row => {
+            if (row && typeof row === 'object') {
+              const entries = Object.entries(row).slice(0, MAX_COLS)
+              return Object.fromEntries(entries)
+            }
+            return row
+          })
+          item.results = sliced
+        }
+        return item
+      })
+      localStorage.setItem(getStorageKey(), JSON.stringify(lightMessages))
+    }
+
+  // Загружаем историю из localStorage (fallback)
+  const loadLocalHistory = () => {
+      try {
+        const raw = localStorage.getItem(getStorageKey())
+        if (!raw) return []
+        const arr = JSON.parse(raw)
+        return Array.isArray(arr) ? arr.slice(-10) : []
+      } catch {
+        return []
+      }
+    }
+
+    const clearHistory = async () => {
+  localStorage.removeItem(getStorageKey())
+  // Пытаемся очистить серверную историю (не блокируем и не показываем ошибку)
+  apiService.clearChatHistory().catch(() => {})
+      messages.value = [
+        {
+          type: 'ai',
+          text:
+            'Привет! Я ИИ-ассистент для работы с базой данных очков. Задайте вопрос на естественном языке, и я помогу вам найти нужную информацию. Например: "Найди солнцезащитные очки Gucci" или "Покажи все женские оправы Ray-Ban".'
+        }
+      ]
+      await nextTick()
+      await scrollToBottom()
+    }
+
     const sendQuery = async () => {
       if (!currentQuery.value.trim() || isLoading.value) return
 
@@ -172,6 +251,9 @@ export default {
       messages.value.push({ type: 'user', text: query })
       currentQuery.value = ''
       isLoading.value = true
+  saveHistory()
+  // Отправляем сообщение пользователя в серверную историю (не блокируем UX)
+  apiService.addChatMessage({ role: 'user', text: query }).catch(() => {})
 
       try {
         // Собираем историю предыдущих запросов пользователя (последние 3)
@@ -187,11 +269,23 @@ export default {
           results: response.data.results,
           error: response.data.error
         })
+        saveHistory()
+        // Сохраняем ответ ИИ на сервере
+        const aiPayload = {
+          role: 'ai',
+          sql: response.data.sql || undefined,
+          text: (!response.data.sql && Array.isArray(response.data.results)) ? (response.data.results[0]?.message || 'Запрос выполнен') : undefined,
+          error: response.data.error || undefined,
+          results: Array.isArray(response.data.results) && response.data.results.length > 0 ? response.data.results : undefined
+        }
+        apiService.addChatMessage(aiPayload).catch(() => {})
       } catch (error) {
         messages.value.push({
           type: 'ai',
           error: 'Ошибка при обработке запроса'
         })
+        saveHistory()
+        apiService.addChatMessage({ role: 'ai', error: 'Ошибка при обработке запроса' }).catch(() => {})
       } finally {
         isLoading.value = false
         await scrollToBottom()
@@ -200,6 +294,22 @@ export default {
 
     const addNewLine = () => {
       currentQuery.value += '\n'
+    }
+
+    // Детектируем и форматируем 1x1 результат (например COUNT)
+    const isSingleValue = (results) => {
+      if (!Array.isArray(results) || results.length !== 1) return false
+      const row = results[0]
+      if (!row || typeof row !== 'object') return false
+      const keys = Object.keys(row)
+      return keys.length === 1
+    }
+
+    const formatSingleValue = (results) => {
+      if (!isSingleValue(results)) return ''
+      const row = results[0]
+      const key = Object.keys(row)[0]
+      return row[key]
     }
 
     const scrollToBottom = async () => {
@@ -213,11 +323,55 @@ export default {
       }
     }
 
-    onMounted(() => {
-      messages.value.push({
-        type: 'ai',
-        text: 'Привет! Я ИИ-ассистент для работы с базой данных очков. Задайте вопрос на естественном языке, и я помогу вам найти нужную информацию. Например: "Найди солнцезащитные очки Gucci" или "Покажи все женские оправы Ray-Ban".'
-      })
+    onMounted(async () => {
+      // Пытаемся загрузить историю с сервера
+      let loaded = false
+      try {
+        const { data } = await apiService.getChatHistory(10)
+        if (Array.isArray(data) && data.length > 0) {
+          messages.value = data.map(item => ({
+            type: item.role,
+            text: item.text || undefined,
+            sql: item.sql || undefined,
+            error: item.error || undefined,
+            results: Array.isArray(item.results) ? item.results : undefined
+          }))
+          // Попробуем дополнить отсутствующие results из локального кеша
+          const local = loadLocalHistory()
+          if (Array.isArray(local) && local.length) {
+            for (let i = 0; i < messages.value.length; i++) {
+              const m = messages.value[i]
+              if (m.type === 'ai' && m.sql && (!Array.isArray(m.results) || m.results.length === 0)) {
+                // ищем похожее сообщение по sql в локальном кеше, начиная с конца
+                for (let j = local.length - 1; j >= 0; j--) {
+                  const lm = local[j]
+                  if (lm.type === 'ai' && lm.sql === m.sql && Array.isArray(lm.results) && lm.results.length > 0) {
+                    m.results = lm.results
+                    break
+                  }
+                }
+              }
+            }
+          }
+          loaded = true
+          saveHistory() // синхронизируем локальный кеш
+        }
+      } catch (e) {}
+
+      if (!loaded) {
+        const restored = loadLocalHistory()
+        if (restored.length > 0) {
+          messages.value = restored
+        } else {
+          messages.value.push({
+            type: 'ai',
+            text:
+              'Привет! Я ИИ-ассистент для работы с базой данных очков. Задайте вопрос на естественном языке, и я помогу вам найти нужную информацию. Например: "Найди солнцезащитные очки Gucci" или "Покажи все женские оправы Ray-Ban".'
+          })
+        }
+      }
+      await nextTick()
+      await scrollToBottom()
     })
 
     return {
@@ -226,7 +380,10 @@ export default {
       isLoading,
       messagesContainer,
       sendQuery,
-      addNewLine
+      addNewLine,
+  clearHistory,
+  isSingleValue,
+  formatSingleValue
     }
   }
 }
@@ -676,6 +833,12 @@ export default {
 .text-muted {
   color: var(--text-color-secondary);
   font-size: 0.875rem;
+}
+
+.input-footer-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
 }
 
 /* Мобильная адаптивность */
