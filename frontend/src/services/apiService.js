@@ -163,10 +163,9 @@ export default {
     return api.put('/images/folders/rename', { oldPath, newName }).then(response => response.data)
   },
 
-  uploadImagesToFolder(folderPath, images, checkDuplicates = true) {
+  uploadImagesToFolder(folderPath, images) {
     const formData = new FormData()
     formData.append('folderPath', folderPath)
-    formData.append('checkDuplicates', checkDuplicates)
     images.forEach((image, index) => {
       formData.append(`images`, image)
     })

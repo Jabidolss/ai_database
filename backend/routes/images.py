@@ -100,7 +100,6 @@ async def rename_folder(
 async def upload_images_to_folder(
     folderPath: str = Form(...),
     images: List[UploadFile] = File(...),
-    checkDuplicates: bool = Form(True),  # По умолчанию проверяем дубликаты
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user)
 ):
@@ -115,7 +114,8 @@ async def upload_images_to_folder(
                 content = await image.read()
                 file_path = f"{folderPath.strip('/')}/{image.filename}" if folderPath != "/" else image.filename
                 
-                result = await s3_service.upload_image_to_path(content, file_path, checkDuplicates)
+                # Проверка дубликатов всегда включена
+                result = await s3_service.upload_image_to_path(content, file_path, True)
                 
                 uploaded_files.append({
                     "filename": image.filename,

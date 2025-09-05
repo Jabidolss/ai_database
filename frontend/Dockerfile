@@ -15,11 +15,12 @@ RUN apk update && apk add --no-cache python3 make g++
 # Set working directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files first for better layer caching
 COPY package*.json ./
 
-# Install dependencies
-RUN npm install
+# Use BuildKit cache for npm and deterministic installs with lockfile
+RUN --mount=type=cache,target=/root/.npm \
+	npm ci --no-audit --no-fund
 
 # Copy source code
 COPY . .

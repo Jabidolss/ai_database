@@ -130,13 +130,18 @@
                     class="selectable-item folder-item p-3 border-round cursor-pointer transition-colors"
                     :class="{ 
                       'bg-primary-100 border-primary': isSelected(folder, 'folder'),
-                      'hover:bg-primary-50': !isSelected(folder, 'folder')
+                      'hover:bg-primary-50': !isSelected(folder, 'folder'),
+                      'drag-over': dragOverFolderId === folder.id,
+                      'dragging': isDragging && isSelected(folder, 'folder')
                     }"
                     @click="handleItemClick(folder, 'folder', $event)"
-                    @contextmenu="showContextMenu($event, folder, 'folder')"
+                    @contextmenu="!isDragging ? showContextMenu($event, folder, 'folder') : null"
                     @dragstart="handleDragStart($event, folder, 'folder')"
+                    @dragenter="handleDragEnter($event, folder)"
                     @dragover="handleDragOver"
+                    @dragleave="handleDragLeave($event, folder)"
                     @drop="handleDrop($event, folder)"
+                    @dragend="handleDragEnd"
                     draggable="true"
                   >
                     <div class="text-center">
@@ -166,11 +171,13 @@
                     class="selectable-item image-item p-3 border-round cursor-pointer transition-colors"
                     :class="{ 
                       'bg-primary-100 border-primary': isSelected(image, 'image'),
-                      'hover:bg-primary-50': !isSelected(image, 'image')
+                      'hover:bg-primary-50': !isSelected(image, 'image'),
+                      'dragging': isDragging && isSelected(image, 'image')
                     }"
                     @click="handleItemClick(image, 'image', $event)"
-                    @contextmenu="showContextMenu($event, image, 'image')"
+                    @contextmenu="!isDragging ? showContextMenu($event, image, 'image') : null"
                     @dragstart="handleDragStart($event, image, 'image')"
+                    @dragend="handleDragEnd"
                     draggable="true"
                   >
                     <div class="text-center">
@@ -381,13 +388,8 @@
     :style="{ width: '500px' }"
   >
     <div class="flex flex-column gap-3">
-      <div class="flex align-items-center gap-2">
-        <Checkbox 
-          v-model="checkDuplicates" 
-          inputId="checkDuplicates" 
-          binary
-        />
-        <label for="checkDuplicates" class="text-sm">Проверять и заменять дубликаты</label>
+      <div class="flex align-items-center gap-2 text-sm text-600">
+        Проверка и замена дубликатов: всегда включено
       </div>
       
       <FileUpload
@@ -586,7 +588,7 @@ import Column from 'primevue/column'
 import ContextMenu from 'primevue/contextmenu'
 import Breadcrumb from 'primevue/breadcrumb'
 import ProgressBar from 'primevue/progressbar'
-import Checkbox from 'primevue/checkbox'
+// import Checkbox from 'primevue/checkbox'
 import Divider from 'primevue/divider'
 import apiService from '../services/apiService'
 
@@ -596,7 +598,7 @@ const viewMode = ref('grid')
 const searchQuery = ref('')
 const currentPath = ref('/')
 const loading = ref(false)
-const checkDuplicates = ref(true)
+// Проверка дубликатов всегда включена на бэкенде
 
 // Данные папок и файлов
 const folders = ref([])
@@ -613,6 +615,8 @@ const selectionRectangle = ref({
 })
 const itemRefs = ref({})
 const draggedItems = ref([])
+const isDragging = ref(false)
+const dragOverFolderId = ref(null)
 const gridContainer = ref(null)
 
 // Диалоги
@@ -925,7 +929,77 @@ const handleDragStart = (event, item, type) => {
   }
   
   draggedItems.value = [...selectedItems.value]
+  isDragging.value = true
   event.dataTransfer.effectAllowed = 'move'
+
+  // Кастомный drag-preview "альбом" из миниатюр
+  try {
+    const preview = document.createElement('canvas')
+    const size = 80
+    const cols = 3
+    const rows = 2
+    preview.width = cols * (size + 6) + 12
+    preview.height = rows * (size + 6) + 12
+    const ctx = preview.getContext('2d')
+    ctx.fillStyle = 'rgba(0,0,0,0.05)'
+    ctx.strokeStyle = 'rgba(0,0,0,0.15)'
+    ctx.lineWidth = 2
+    ctx.fillRect(0, 0, preview.width, preview.height)
+    ctx.strokeRect(1, 1, preview.width - 2, preview.height - 2)
+
+    const items = draggedItems.value.slice(0, cols * rows)
+    let i = 0
+    for (const it of items) {
+      const c = i % cols
+      const r = Math.floor(i / cols)
+      const x = 8 + c * (size + 6)
+      const y = 8 + r * (size + 6)
+
+      // рисуем подложку
+      ctx.fillStyle = '#fff'
+      ctx.strokeStyle = 'rgba(0,0,0,0.1)'
+      ctx.lineWidth = 1
+      ctx.fillRect(x, y, size, size)
+      ctx.strokeRect(x + 0.5, y + 0.5, size - 1, size - 1)
+
+      // пытаемся подгрузить картинку
+      if (it.url || it.thumbnailUrl) {
+        const img = new Image()
+        img.crossOrigin = 'anonymous'
+        img.src = it.thumbnailUrl || it.url
+        img.onload = () => {
+          const ratio = Math.min(size / img.width, size / img.height)
+          const w = img.width * ratio
+          const h = img.height * ratio
+          const dx = x + (size - w) / 2
+          const dy = y + (size - h) / 2
+          ctx.drawImage(img, dx, dy, w, h)
+        }
+      }
+      i++
+    }
+
+    // бейдж количества
+    if (draggedItems.value.length > items.length) {
+      const count = draggedItems.value.length
+      const badgeR = 12
+      const bx = preview.width - badgeR * 2 - 6
+      const by = 6
+      ctx.fillStyle = '#10b981'
+      ctx.beginPath()
+      ctx.arc(bx + badgeR, by + badgeR, badgeR, 0, Math.PI * 2)
+      ctx.fill()
+      ctx.fillStyle = '#fff'
+      ctx.font = 'bold 12px sans-serif'
+      ctx.textAlign = 'center'
+      ctx.textBaseline = 'middle'
+      ctx.fillText(String(count), bx + badgeR, by + badgeR)
+    }
+
+    event.dataTransfer.setDragImage(preview, preview.width / 2, preview.height / 2)
+  } catch (e) {
+    // безопасный фоллбек: ничего, оставим дефолт
+  }
 }
 
 const handleDragOver = (event) => {
@@ -939,6 +1013,24 @@ const handleDrop = (event, targetFolder) => {
     moveItemsToFolder(draggedItems.value, targetFolder.path)
   }
   draggedItems.value = []
+  isDragging.value = false
+  dragOverFolderId.value = null
+}
+
+const handleDragEnter = (event, folder) => {
+  event.preventDefault()
+  dragOverFolderId.value = folder?.id || null
+}
+
+const handleDragLeave = (event, folder) => {
+  if (!event.currentTarget.contains(event.relatedTarget)) {
+    dragOverFolderId.value = null
+  }
+}
+
+const handleDragEnd = () => {
+  isDragging.value = false
+  dragOverFolderId.value = null
 }
 
 // Методы
@@ -1023,7 +1115,7 @@ const uploadImages = async () => {
   
   uploading.value = true
   try {
-    const result = await apiService.uploadImagesToFolder(currentPath.value, selectedImages.value, checkDuplicates.value)
+  const result = await apiService.uploadImagesToFolder(currentPath.value, selectedImages.value)
     
     let message = result.message
     if (result.replaced_duplicates > 0) {
@@ -1502,6 +1594,19 @@ const selectAll = () => {
 
 .selectable-item[draggable="true"]:active {
   cursor: grabbing;
+}
+
+.drag-over {
+  outline: 2px dashed var(--primary-color);
+  outline-offset: -4px;
+  filter: drop-shadow(0 2px 6px rgba(16,185,129,0.25));
+  background: rgba(16,185,129,0.06);
+}
+
+.dragging {
+  opacity: 0.75;
+  transform: scale(0.98);
+  transition: transform 120ms ease, opacity 120ms ease, outline-color 120ms ease;
 }
 
 /* Анимации */

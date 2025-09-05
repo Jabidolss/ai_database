@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.4
 # Python base image
 FROM python:3.9-slim
 
@@ -18,8 +19,10 @@ ENV HTTP_PROXY=${HTTP_PROXY} \
 # System packages: none required for runtime; keep image minimal
 
 # Copy requirements and install Python dependencies
+# This layer is cached as long as requirements.txt doesn't change
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install -r requirements.txt
 
 # Copy application code
 COPY . .
