@@ -163,9 +163,10 @@ export default {
     return api.put('/images/folders/rename', { oldPath, newName }).then(response => response.data)
   },
 
-  uploadImagesToFolder(folderPath, images) {
+  uploadImagesToFolder(folderPath, images, checkDuplicates = true) {
     const formData = new FormData()
     formData.append('folderPath', folderPath)
+    formData.append('checkDuplicates', checkDuplicates)
     images.forEach((image, index) => {
       formData.append(`images`, image)
     })
@@ -189,6 +190,15 @@ export default {
 
   renameImage(oldPath, newName) {
     return api.put('/images/rename', { oldPath, newName }).then(response => response.data)
+  },
+
+  // Множественные операции с изображениями
+  bulkDeleteItems(paths) {
+    return api.delete('/images/bulk-delete', { data: { paths } }).then(response => response.data)
+  },
+
+  moveItems(sourcePaths, targetPath) {
+    return api.post('/images/move-items', { sourcePaths, targetPath }).then(response => response.data)
   },
 
   exportMappingSettings() {

@@ -5,6 +5,7 @@ import io
 from typing import List, Dict
 import os
 from datetime import datetime
+import hashlib
 
 class S3Service:
     def __init__(self):
@@ -208,19 +209,78 @@ class S3Service:
         
         return new_prefix
 
-    async def upload_image_to_path(self, image_data: bytes, file_path: str) -> str:
-        """Загрузка изображения по указанному пути"""
+    async def check_duplicate_image(self, image_data: bytes) -> Dict:
+        """Проверка дубликата изображения по хешу"""
+        try:
+            # Вычисляем MD5 хеш изображения
+            image_hash = hashlib.md5(image_data).hexdigest()
+            
+            # Ищем все изображения с таким же хешем в S3
+            paginator = self.s3.get_paginator('list_objects_v2')
+            
+            for page in paginator.paginate(Bucket=self.bucket):
+                for obj in page.get('Contents', []):
+                    if not obj['Key'].lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff')):
+                        continue
+                        
+                    try:
+                        # Получаем метаданные объекта
+                        response = self.s3.head_object(Bucket=self.bucket, Key=obj['Key'])
+                        metadata = response.get('Metadata', {})
+                        
+                        # Если хеш есть в метаданных и совпадает - это дубликат
+                        if metadata.get('image-hash') == image_hash:
+                            return {
+                                'is_duplicate': True,
+                                'existing_file': {
+                                    'key': obj['Key'],
+                                    'url': self._build_object_url(obj['Key']),
+                                    'size': obj['Size'],
+                                    'last_modified': obj['LastModified'].isoformat()
+                                }
+                            }
+                            
+                    except Exception as e:
+                        # Если не можем получить метаданные - продолжаем поиск
+                        continue
+                        
+            return {'is_duplicate': False}
+            
+        except Exception as e:
+            print(f"Ошибка проверки дубликата: {e}")
+            return {'is_duplicate': False}
+
+    async def upload_image_to_path(self, image_data: bytes, file_path: str, check_duplicate: bool = True) -> Dict:
+        """Загрузка изображения по указанному пути с проверкой дубликатов"""
         key = file_path.lstrip('/')
+        
+        # Проверяем на дубликаты если включена опция
+        if check_duplicate:
+            duplicate_check = await self.check_duplicate_image(image_data)
+            if duplicate_check['is_duplicate']:
+                existing = duplicate_check['existing_file']
+                # Если дубликат найден, заменяем старый файл новым
+                await self.delete_image_by_key(existing['key'])
+        
+        # Вычисляем хеш изображения для сохранения в метаданных
+        image_hash = hashlib.md5(image_data).hexdigest()
         
         self.s3.put_object(
             Bucket=self.bucket,
             Key=key,
             Body=image_data,
             ContentType=self._get_content_type(file_path),
+            Metadata={'image-hash': image_hash},
             ACL='public-read'
         )
         
-        return self._build_object_url(key)
+        url = self._build_object_url(key)
+        
+        return {
+            'url': url,
+            'replaced_duplicate': duplicate_check.get('is_duplicate', False) if check_duplicate else False,
+            'replaced_file': duplicate_check.get('existing_file') if check_duplicate and duplicate_check.get('is_duplicate') else None
+        }
 
     async def upload_zip_to_folder(self, zip_content: bytes, folder_path: str) -> Dict:
         """Загрузка и распаковка ZIP в указанную папку с сохранением структуры (параллельная обработка)"""
@@ -275,6 +335,21 @@ class S3Service:
                     async with semaphore:
                         try:
                             key = f"{base_prefix}{norm_path}"
+                            
+                            # Проверяем на дубликаты
+                            duplicate_check = await self.check_duplicate_image(file_content)
+                            replaced_duplicate = False
+                            replaced_file = None
+                            
+                            if duplicate_check['is_duplicate']:
+                                # Удаляем старый дубликат
+                                existing = duplicate_check['existing_file']
+                                await self.delete_image_by_key(existing['key'])
+                                replaced_duplicate = True
+                                replaced_file = existing
+                            
+                            # Вычисляем хеш для метаданных
+                            image_hash = hashlib.md5(file_content).hexdigest()
                             content_type = self._get_content_type(norm_path)
 
                             # Используем asyncio для неблокирующего выполнения
@@ -285,12 +360,20 @@ class S3Service:
                                     Bucket=self.bucket,
                                     Key=key,
                                     Body=file_content,
-                                    ContentType=content_type
+                                    ContentType=content_type,
+                                    Metadata={'image-hash': image_hash}
                                 )
                             )
                             
                             url = self._build_object_url(key)
-                            return {"filename": norm_path, "url": url, "size": len(file_content), "status": "success"}
+                            return {
+                                "filename": norm_path, 
+                                "url": url, 
+                                "size": len(file_content), 
+                                "status": "success",
+                                "replaced_duplicate": replaced_duplicate,
+                                "replaced_file": replaced_file
+                            }
                         except Exception as e:
                             return {"filename": norm_path, "error": str(e), "status": "failed"}
 
@@ -304,6 +387,7 @@ class S3Service:
                 results = await asyncio.gather(*tasks, return_exceptions=True)
 
                 # Обрабатываем результаты
+                replaced_count = 0
                 for result in results:
                     if isinstance(result, Exception):
                         failed.append({"filename": "unknown", "error": str(result)})
@@ -313,6 +397,8 @@ class S3Service:
                             "url": result["url"],
                             "size": result["size"]
                         })
+                        if result.get("replaced_duplicate"):
+                            replaced_count += 1
                     else:
                         failed.append({
                             "filename": result["filename"],
@@ -322,16 +408,25 @@ class S3Service:
         except Exception as e:
             return {"uploaded": [], "failed": [{"filename": "archive", "error": f"Ошибка распаковки: {e}"}]}
 
+        message = f"Загружено {len(uploaded)} из {len(uploaded) + len(failed)} файлов"
+        if replaced_count > 0:
+            message += f" ({replaced_count} дубликатов заменено)"
+
         return {
             "uploaded": uploaded, 
             "failed": failed,
-            "message": f"Загружено {len(uploaded)} из {len(uploaded) + len(failed)} файлов"
+            "message": message,
+            "replaced_duplicates": replaced_count
         }
+
+    async def delete_image_by_key(self, key: str):
+        """Удаление изображения по ключу S3"""
+        self.s3.delete_object(Bucket=self.bucket, Key=key)
 
     async def delete_image_by_path(self, image_path: str):
         """Удаление изображения по пути"""
         key = image_path.lstrip('/')
-        self.s3.delete_object(Bucket=self.bucket, Key=key)
+        await self.delete_image_by_key(key)
 
     async def rename_image(self, old_path: str, new_name: str) -> str:
         """Переименование изображения"""
@@ -353,6 +448,38 @@ class S3Service:
         self.s3.delete_object(Bucket=self.bucket, Key=old_key)
         
         return new_key
+
+    async def move_folder(self, old_path: str, new_path: str):
+        """Перемещение папки"""
+        old_prefix = old_path.strip('/') + '/'
+        new_prefix = new_path.strip('/') + '/'
+
+        paginator = self.s3.get_paginator('list_objects_v2')
+        for page in paginator.paginate(Bucket=self.bucket, Prefix=old_prefix):
+            for obj in page.get('Contents', []):
+                old_key = obj['Key']
+                new_key = old_key.replace(old_prefix, new_prefix, 1)
+                self.s3.copy_object(
+                    Bucket=self.bucket,
+                    CopySource={'Bucket': self.bucket, 'Key': old_key},
+                    Key=new_key
+                )
+                self.s3.delete_object(Bucket=self.bucket, Key=old_key)
+
+    async def move_image(self, old_path: str, new_path: str):
+        """Перемещение изображения"""
+        old_key = old_path.lstrip('/')
+        new_key = new_path.lstrip('/')
+        
+        # Копируем объект
+        self.s3.copy_object(
+            Bucket=self.bucket,
+            CopySource={'Bucket': self.bucket, 'Key': old_key},
+            Key=new_key
+        )
+        
+        # Удаляем старый объект
+        self.s3.delete_object(Bucket=self.bucket, Key=old_key)
 
     async def search_images(self, query: str, folder_path: str = "/") -> List[Dict]:
         """Поиск изображений по названию"""
